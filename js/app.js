@@ -317,7 +317,7 @@
       `<a href="#/${k}" class="${p === k || (p === 'req' && k === 'requisiciones') ? 'on' : ''}"><span class="ni">${ic}</span><span class="nl">${l}</span></a>`).join('');
     return `${DEMO ? `<div class="demo-bar">Modo demostración: los datos se guardan solo en este navegador. <button class="link" onclick="App.resetDemo()">Reiniciar datos de prueba</button></div>` : ''}
     <header class="top">
-      <a class="brand" href="#/inicio"><span class="logo-s">📦</span><span><b>Compras de obra</b><small>${esc(EMP.nombre)}</small></span></a>
+      <a class="brand" href="#/inicio"><img class="brand-ico" src="img/icono.png" alt=""><span><b>Compras de obra</b><small>${esc(EMP.nombre)}</small></span></a>
       <nav class="nav">${navHtml}</nav>
       <div class="top-r">
         <button class="icon bell" id="bell" onclick="App.toggleNotifs()" title="Notificaciones" aria-label="Notificaciones">🔔${unread ? `<span class="dot">${unread}</span>` : ''}</button>
@@ -339,7 +339,7 @@
     const demoUsers = [['obra@demo.co', 'Trabajador de obra'], ['jefe@demo.co', 'Jefe (aprueba)'], ['compras@demo.co', 'Compras'], ['tesoreria@demo.co', 'Tesorería (paga)'], ['admin@demo.co', 'Administrador']];
     if (store.needsSetup) return paintSetup();
     $('#app').innerHTML = `<div class="login"><div class="card login-card">
-      <div class="logo">📦</div><h1>Compras de obra</h1><p class="muted">${esc(EMP.nombre)} · Solicitudes, aprobaciones, cotizaciones y pagos</p>
+      <img class="login-logo" src="img/logo.png" alt="${esc(EMP.nombre)}"><h1>Compras de obra</h1><p class="muted">Solicitudes, aprobaciones, cotizaciones y pagos</p>
       ${GHM ? '<p class="lock">🔒 Acceso protegido · datos cifrados</p>' : ''}
       <form id="fLogin" onsubmit="App.login(event)">
         <label>${LBL_USUARIO}<input name="email" type="${GHM ? 'text' : 'email'}" required autocomplete="username" autocapitalize="none"></label>
@@ -420,6 +420,7 @@
       <div class="kpi"><span>Cotizaciones por aprobar</span><b>${porAprobar.length}</b><small>${money(porAprobar.reduce((s, x) => s + x.c.total, 0))}</small></div>
       <div class="kpi"><span>Aprobado por pagar</span><b>${porPagar.length}</b><small>${money(porPagar.reduce((s, x) => s + x.c.total, 0))}</small></div>
     </section>
+    ${tarjetaEnlace()}
     ${soloSolic ? '' : `<section class="card"><h2>Mis tareas pendientes <span class="count">${T.length}</span></h2>
       ${T.length ? `<div class="tasks">${T.map(taskHtml).join('')}</div>` : '<p class="empty">🎉 No tiene tareas pendientes.</p>'}</section>`}
     <section class="card"><h2>Mis solicitudes</h2>
@@ -548,6 +549,7 @@
       acciones.push(`<button class="btn" onclick="App.modalRFQ('${r.id}',true)">📥 Registrar cotización ya recibida</button>`);
     }
     if (!info.cerrada) acciones.push(`<button class="btn ghost" onclick="App.modalAgregar('${r.id}')">＋ Agregar ítems</button>`);
+    acciones.push(`<button class="btn ghost" onclick="App.docReq('${r.id}')">🖨️ Requisición (PDF)</button>`);
 
     return `<a class="back" href="#/requisiciones">← Solicitudes</a>
     <section class="card">
@@ -608,7 +610,8 @@
   function cotCard(r, c) {
     const its = cotItems(r, c), A = [];
     const prov = S.proveedores.find(p => p.id === c.proveedorId) || {};
-    A.push(`<button class="btn sm ghost" onclick="App.docRFQ('${r.id}','${c.id}')">📄 Documento</button>`);
+    A.push(`<button class="btn sm ghost" onclick="App.docRFQ('${r.id}','${c.id}')">📄 Solicitud de cotización</button>`);
+    if (['aprobada', 'pagada'].includes(c.estado)) A.push(`<button class="btn sm" onclick="App.docOC('${r.id}','${c.id}')">🧾 Orden de compra</button>`);
     if (c.estado === 'solicitada' && has('compras')) {
       A.push(`<a class="btn sm ghost" target="_blank" rel="noopener" href="${waLink(r, c, prov)}">💬 WhatsApp</a>`);
       A.push(`<a class="btn sm ghost" href="${mailLink(r, c, prov)}">✉️ Correo</a>`);
@@ -675,37 +678,86 @@
   }
   const waLink = (r, c, prov) => `https://wa.me/${telWa(prov.telefono)}?text=${encodeURIComponent(textoRFQ(r, c))}`;
   const mailLink = (r, c, prov) => `mailto:${encodeURIComponent(prov.email || '')}?subject=${encodeURIComponent('Solicitud de cotización ' + c.codigo + ' - ' + EMP.nombre)}&body=${encodeURIComponent(textoRFQ(r, c))}`;
+  // Documento imprimible con el logo y los datos de la empresa (requisición, solicitud de cotización, orden de compra).
+  const LOGO = new URL('img/logo.png', location.href.split('#')[0]).href;
+  function docVentana(titulo, tipo, numero, fecha, cuerpo, copiar) {
+    const w = window.open('', '_blank');
+    if (!w) { toast('El navegador bloqueó la ventana. Permita ventanas emergentes para este sitio.', 'err'); return; }
+    w.document.write(`<!doctype html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${esc(numero)} - ${esc(titulo)}</title>
+    <style>
+      body{font-family:Arial,Helvetica,sans-serif;color:#1d2433;margin:0;padding:24px;background:#eef1f5}
+      .doc{background:#fff;max-width:780px;margin:0 auto;padding:32px 40px;box-shadow:0 2px 12px rgba(0,0,0,.08)}
+      .hd{display:flex;justify-content:space-between;align-items:center;gap:16px;border-bottom:3px solid #1c3fcc;padding-bottom:14px}
+      .emp{display:flex;align-items:center;gap:14px}.emp img{height:78px;width:auto}
+      .emp p{margin:2px 0;font-size:12px;color:#555}.emp b{font-size:14px}
+      .num{text-align:right}.num span{font-size:13px;letter-spacing:.06em;color:#1c3fcc;font-weight:700}.num b{display:block;font-size:20px}.num p{margin:2px 0;font-size:12px}
+      h2{font-size:15px;margin:22px 0 8px;letter-spacing:.5px;color:#1c3fcc}
+      .grid{display:grid;grid-template-columns:1fr 1fr;gap:4px 24px;font-size:13px}.grid span{color:#666}
+      table{width:100%;border-collapse:collapse;margin-top:10px;font-size:13px}
+      th,td{border:1px solid #c9d1dd;padding:7px 8px;text-align:left;vertical-align:top}th{background:#eef1fc}
+      td.r,th.r{text-align:right}td.blank{width:110px}td small{color:#666}
+      tr.tot td{font-weight:700;font-size:14px}
+      .obs{font-size:13px;background:#f7f9fc;border:1px solid #e3e7ee;padding:10px 12px;border-radius:4px;white-space:pre-wrap}
+      .ft{margin-top:46px;display:flex;justify-content:space-between;gap:24px;flex-wrap:wrap;font-size:12px;color:#444}
+      .firma{border-top:1px solid #888;padding-top:4px;width:220px}
+      .pie{margin-top:18px;font-size:11px;color:#888;text-align:center}
+      .bar{max-width:780px;margin:0 auto 12px;display:flex;gap:8px;justify-content:flex-end}
+      .bar button{font:inherit;padding:8px 14px;border-radius:6px;border:1px solid #1c3fcc;background:#1c3fcc;color:#fff;cursor:pointer}
+      .bar button.g{background:#fff;color:#1c3fcc}
+      @media print{body{background:#fff;padding:0}.doc{box-shadow:none;padding:0}.bar{display:none}}
+      @media (max-width:600px){body{padding:8px}.doc{padding:18px}.grid{grid-template-columns:1fr}.hd{flex-direction:column;align-items:flex-start}.num{text-align:left}.emp img{height:60px}}
+    </style></head><body>
+    <div class="bar">${copiar ? `<button class="g" onclick="navigator.clipboard&&navigator.clipboard.writeText(document.getElementById('txt').value).then(()=>alert('Texto copiado'))">Copiar texto</button>` : ''}<button onclick="print()">Imprimir / Guardar PDF</button></div>
+    <div class="doc">
+      <div class="hd"><div class="emp"><img src="${LOGO}" alt="${esc(EMP.nombre)}"><div><b>${esc(EMP.nombre)}</b><p>${esc(EMP.nit || '')}</p><p>${esc(EMP.direccion || '')} ${esc(EMP.ciudad || '')}</p><p>${esc(EMP.telefono || '')} · ${esc(EMP.email || '')}</p></div></div>
+        <div class="num"><span>${esc(tipo)}</span><b>No. ${esc(numero)}</b><p>Fecha: ${fdate(fecha)}</p></div></div>
+      ${cuerpo}
+      <p class="pie">Documento generado por el sistema de compras de ${esc(EMP.nombre)}</p>
+    </div>
+    ${copiar ? `<textarea id="txt" style="position:absolute;left:-9999px">${esc(copiar)}</textarea>` : ''}
+    </body></html>`);
+    w.document.close();
+  }
+  function docReq(reqId) {
+    const r = S.reqs.find(x => x.id === reqId); if (!r) return;
+    const info = reqInfo(r);
+    const jefes = [...new Set(r.items.map(i => i.decididoPorNombre).filter(Boolean))];
+    docVentana('Requisición de materiales', 'REQUISICIÓN DE MATERIALES', code(r), r.creado, `
+      <h2>DATOS DE LA SOLICITUD</h2>
+      <div class="grid"><div><span>Proyecto / obra:</span> ${esc(r.proyecto)}</div><div><span>Estado:</span> ${esc(REQ_EST[info.estado].l)}</div>
+        <div><span>Solicitado por:</span> ${esc(r.solicitantes)}</div>${r.cedula ? `<div><span>Cédula:</span> ${esc(r.cedula)}</div>` : `<div><span>Registrado por:</span> ${esc(r.creadoPorNombre)}</div>`}
+        <div><span>Prioridad:</span> ${r.prioridad === 'urgente' ? 'URGENTE' : 'Normal'}</div>${r.fechaRequerida ? `<div><span>Se necesita para:</span> ${fdate(r.fechaRequerida + 'T12:00:00')}</div>` : ''}
+        ${r.radicado ? `<div><span>Radicado (enlace):</span> ${esc(r.radicado)}</div>` : ''}</div>
+      <table><thead><tr><th>#</th><th>Descripción</th><th class="r">Cantidad</th><th>Unidad</th><th>Estado</th><th>Observación</th></tr></thead>
+      <tbody>${r.items.map((i, k) => { const ic = itemCompra(r, i); return `<tr><td>${k + 1}</td><td>${esc(i.descripcion)}${ic ? `<br><small>${esc(ic.c.proveedorNombre)} · ${ic.c.codigo}</small>` : ''}</td><td class="r">${i.cantidad}</td><td>${esc(i.unidad)}</td><td>${esc(ITEM_EST[itemStage(r, i)].l)}</td><td>${esc(i.nota || '')}${i.decididoPorNombre ? `<br><small>${esc(i.decididoPorNombre)} · ${fdate(i.decididoEn)}</small>` : ''}</td></tr>`; }).join('')}</tbody></table>
+      ${r.notas ? `<h2>OBSERVACIONES</h2><div class="obs">${esc(r.notas)}</div>` : ''}
+      <div class="ft"><div class="firma">${esc(r.solicitantes)}<br>Solicitante</div><div class="firma">${esc(jefes.join(', ') || ' ')}<br>Aprobó</div><div class="firma">&nbsp;<br>Recibió en obra</div></div>`);
+  }
+  function docOC(reqId, cotId) {
+    const r = S.reqs.find(x => x.id === reqId), c = r.cotizaciones.find(x => x.id === cotId);
+    const prov = S.proveedores.find(p => p.id === c.proveedorId) || { nombre: c.proveedorNombre };
+    const its = cotItems(r, c), numero = c.codigo.replace(/^SC/, 'OC');
+    docVentana('Orden de compra', 'ORDEN DE COMPRA', numero, c.fechaDecision || now(), `
+      <h2>PROVEEDOR</h2>
+      <div class="grid"><div><span>Razón social:</span> ${esc(prov.nombre)}</div><div><span>NIT:</span> ${esc(prov.nit || '')}</div>
+        <div><span>Contacto:</span> ${esc(prov.contacto || '')}</div><div><span>Teléfono:</span> ${esc(prov.telefono || '')}</div></div>
+      <h2>CONDICIONES</h2>
+      <div class="grid"><div><span>Lugar de entrega:</span> ${esc(r.proyecto)}</div><div><span>Requisición:</span> ${code(r)} · Cotización ${c.codigo}</div>
+        <div><span>Forma de pago:</span> ${esc(c.formaPago || '')}</div><div><span>Tiempo de entrega:</span> ${esc(c.entrega || '')}</div></div>
+      <table><thead><tr><th>#</th><th>Descripción</th><th class="r">Cant.</th><th>Und.</th><th class="r">IVA</th><th class="r">Vr. unitario</th><th class="r">Vr. total</th></tr></thead>
+      <tbody>${its.map((i, k) => `<tr><td>${k + 1}</td><td>${esc(prodC(c, i) || i.descripcion)}${prodC(c, i) ? `<br><small>${esc(i.descripcion)}</small>` : ''}</td><td class="r">${cantC(c, i)}</td><td>${esc(i.unidad)}</td><td class="r">${ivaC(c, i)}%</td><td class="r">${money(c.precios[i.id])}</td><td class="r">${money(num(c.precios[i.id]) * cantC(c, i))}</td></tr>`).join('')}
+      <tr><td colspan="6" class="r">Subtotal${c.ivaInc ? ' (IVA incluido)' : ''}</td><td class="r">${money(c.subtotal)}</td></tr>
+      <tr><td colspan="6" class="r">IVA</td><td class="r">${money(c.iva)}</td></tr>
+      ${num(c.otros) ? `<tr><td colspan="6" class="r">Flete / otros</td><td class="r">${money(c.otros)}</td></tr>` : ''}
+      <tr class="tot"><td colspan="6" class="r">TOTAL</td><td class="r">${money(c.total)}</td></tr></tbody></table>
+      ${c.notaJefe || c.notaCompras ? `<h2>OBSERVACIONES</h2><div class="obs">${esc([c.notaCompras, c.notaJefe].filter(Boolean).join('\n'))}</div>` : ''}
+      <div class="ft"><div class="firma">${esc((c.recibidaPorNombre || c.solicitadaPorNombre || '').split(' (')[0])}<br>Compras</div><div class="firma">${esc(c.decididaPorNombre || '')}<br>Aprobó</div><div class="firma">&nbsp;<br>Proveedor (recibido)</div></div>`);
+  }
   function docRFQ(reqId, cotId) {
     const r = S.reqs.find(x => x.id === reqId), c = r.cotizaciones.find(x => x.id === cotId);
     const prov = S.proveedores.find(p => p.id === c.proveedorId) || { nombre: c.proveedorNombre };
     const its = cotItems(r, c);
-    const w = window.open('', '_blank');
-    if (!w) return toast('El navegador bloqueó la ventana. Permita ventanas emergentes para este sitio.', 'err');
-    w.document.write(`<!doctype html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${c.codigo} - Solicitud de cotización</title>
-    <style>
-      body{font-family:Arial,Helvetica,sans-serif;color:#1d2433;margin:0;padding:24px;background:#eef1f5}
-      .doc{background:#fff;max-width:780px;margin:0 auto;padding:36px 40px;box-shadow:0 2px 12px rgba(0,0,0,.08)}
-      .hd{display:flex;justify-content:space-between;gap:16px;border-bottom:3px solid #1f5fbf;padding-bottom:14px}
-      .hd h1{margin:0;font-size:22px;color:#1f5fbf}.hd p{margin:2px 0;font-size:12px;color:#555}
-      .num{text-align:right}.num b{display:block;font-size:20px}
-      h2{font-size:16px;margin:22px 0 8px;letter-spacing:.5px}
-      .grid{display:grid;grid-template-columns:1fr 1fr;gap:4px 24px;font-size:13px}.grid span{color:#666}
-      table{width:100%;border-collapse:collapse;margin-top:10px;font-size:13px}
-      th,td{border:1px solid #c9d1dd;padding:7px 8px;text-align:left}th{background:#eef3fb}
-      td.r,th.r{text-align:right}td.blank{width:110px}
-      .obs{font-size:13px;background:#f7f9fc;border:1px solid #e3e7ee;padding:10px 12px;border-radius:4px;white-space:pre-wrap}
-      .ft{margin-top:40px;display:flex;justify-content:space-between;font-size:12px;color:#444}
-      .firma{border-top:1px solid #888;padding-top:4px;width:240px}
-      .bar{max-width:780px;margin:0 auto 12px;display:flex;gap:8px;justify-content:flex-end}
-      .bar button{font:inherit;padding:8px 14px;border-radius:6px;border:1px solid #1f5fbf;background:#1f5fbf;color:#fff;cursor:pointer}
-      .bar button.g{background:#fff;color:#1f5fbf}
-      @media print{body{background:#fff;padding:0}.doc{box-shadow:none;padding:0}.bar{display:none}}
-      @media (max-width:600px){body{padding:8px}.doc{padding:18px}.grid{grid-template-columns:1fr}.hd{flex-direction:column}.num{text-align:left}}
-    </style></head><body>
-    <div class="bar"><button class="g" onclick="navigator.clipboard&&navigator.clipboard.writeText(document.getElementById('txt').value).then(()=>alert('Texto copiado'))">Copiar texto</button><button onclick="print()">Imprimir / Guardar PDF</button></div>
-    <div class="doc">
-      <div class="hd"><div><h1>${esc(EMP.nombre)}</h1><p>${esc(EMP.nit || '')}</p><p>${esc(EMP.direccion || '')} ${esc(EMP.ciudad || '')}</p><p>${esc(EMP.telefono || '')} · ${esc(EMP.email || '')}</p></div>
-        <div class="num"><span>SOLICITUD DE COTIZACIÓN</span><b>No. ${c.codigo}</b><p>Fecha: ${fdate(c.fechaSolicitud)}</p></div></div>
+    docVentana('Solicitud de cotización', 'SOLICITUD DE COTIZACIÓN', c.codigo, c.fechaSolicitud, `
       <h2>PROVEEDOR</h2>
       <div class="grid"><div><span>Razón social:</span> ${esc(prov.nombre)}</div><div><span>NIT:</span> ${esc(prov.nit || '')}</div>
         <div><span>Contacto:</span> ${esc(prov.contacto || '')}</div><div><span>Teléfono:</span> ${esc(prov.telefono || '')}</div>
@@ -719,11 +771,7 @@
       <h2>OBSERVACIONES Y CONDICIONES</h2>
       <div class="obs">${c.observaciones ? esc(c.observaciones) + '\n' : ''}Favor indicar en su cotización: precio unitario antes de IVA, valor del IVA, costo de transporte (si aplica), tiempo de entrega, forma de pago y validez de la oferta.
 Enviar la cotización respondiendo a este mensaje o al correo ${esc(EMP.email || '')}, citando el número ${c.codigo}.</div>
-      <div class="ft"><div class="firma">${esc((c.solicitadaPorNombre || S.user.nombre).split(' (')[0])}<br>Compras · ${esc(EMP.nombre)}</div><div>Documento generado automáticamente</div></div>
-    </div>
-    <textarea id="txt" style="position:absolute;left:-9999px">${esc(textoRFQ(r, c))}</textarea>
-    </body></html>`);
-    w.document.close();
+      <div class="ft"><div class="firma">${esc((c.solicitadaPorNombre || S.user.nombre).split(' (')[0])}<br>Compras · ${esc(EMP.nombre)}</div></div>`, textoRFQ(r, c));
   }
 
   /* ------------------------------------------------------------ COTIZACIONES */
@@ -907,10 +955,24 @@ Enviar la cotización respondiendo a este mensaje o al correo ${esc(EMP.email ||
       <div class="tabs">${tabs.map(([k, l]) => `<button class="${S.admTab === k ? 'on' : ''}" onclick="App.admTab('${k}')">${l}</button>`).join('')}</div>${body}</section>`;
   }
 
+  const enlaceURL = () => new URL('solicitud.html', location.href.split('#')[0]).href;
+  const enlaceMsg = () => `Hola. Para pedir materiales para la obra entra aquí desde el celular, escribe tu cédula, tu nombre, el proyecto y lo que necesitas. Con tu cédula también puedes ver cómo va lo que pediste: ${enlaceURL()}`;
+  // Acceso rápido en Inicio para compartir el enlace con el personal de obra.
+  function tarjetaEnlace() {
+    if (store.mode === 'supabase' || !(has('jefe') || has('compras'))) return '';
+    const b = store.buzonInfo && store.buzonInfo();
+    if (!b) return has('admin') ? `<section class="card enlace-card"><div class="row between wrap"><div><h2>📲 Enlace para el personal de obra</h2>
+      <p class="muted">Aún no está activo. Actívelo para que los trabajadores pidan materiales sin usuario.</p></div>
+      <button class="btn primary" onclick="App.irEnlace()">Activar enlace</button></div></section>` : '';
+    return `<section class="card enlace-card"><h2>📲 Enlace para el personal de obra</h2>
+      <p class="muted sm">Compártalo con los trabajadores: piden materiales con su cédula, sin usuario, y consultan cómo va lo que pidieron.</p>
+      <div class="row gap wrap"><input id="enlaceInicio" readonly value="${esc(enlaceURL())}" style="flex:1;min-width:220px" onclick="this.select()">
+        <button type="button" class="btn" onclick="navigator.clipboard&&navigator.clipboard.writeText(document.getElementById('enlaceInicio').value).then(()=>App.toast('Enlace copiado'))">📋 Copiar</button>
+        <a class="btn primary" target="_blank" rel="noopener" href="https://wa.me/?text=${encodeURIComponent(enlaceMsg())}">💬 Enviar por WhatsApp</a></div></section>`;
+  }
   function enlaceHtml() {
     const b = store.buzonInfo && store.buzonInfo();
-    const url = new URL('solicitud.html', location.href.split('#')[0]).href;
-    const msg = `Hola. Para pedir materiales para la obra, entra aquí desde el celular, escribe tu cédula, tu nombre, el proyecto y lo que necesitas: ${url}`;
+    const url = enlaceURL(), msg = enlaceMsg();
     const enl = S.reqs.filter(r => r.origen === 'enlace');
     return `<p>Los trabajadores <b>no necesitan usuario</b>: entran al enlace, escriben su cédula, su nombre, el proyecto y lo que necesitan. La solicitud llega a la app como <b>Por revisar</b> y se notifica a los jefes. Con su cédula, cada persona puede consultar en el mismo enlace el estado de lo que ha pedido.</p>
       ${b ? `<div class="alert">✓ Enlace activo${GHM ? ` · las solicitudes se reciben cifradas en el buzón <b>${esc(b.owner)}/${esc(b.repo)}</b>` : ' (demostración: funciona solo en este navegador)'}. Llevan ${enl.length} solicitud(es) recibidas por el enlace.</div>
@@ -1139,7 +1201,7 @@ Enviar la cotización respondiendo a este mensaje o al correo ${esc(EMP.email ||
         <div class="row gap wrap"><button class="btn sm" onclick="App.docRFQ('${r.id}','${c.id}')">📄 Ver / PDF</button><a class="btn sm" target="_blank" rel="noopener" href="${waLink(r, c, p)}">💬 WhatsApp</a><a class="btn sm" href="${mailLink(r, c, p)}">✉️ Correo</a></div></div>`; }).join('')}
       <div class="actions"><button class="btn primary" onclick="App.cerrarModal()">Listo</button></div>`, true);
   });
-  App.docRFQ = docRFQ;
+  App.docRFQ = docRFQ; App.docReq = docReq; App.docOC = docOC;
   App.marcarItems = (form, si) => $$('input[name=it], input.incl', form).forEach(x => { x.checked = si; x.dispatchEvent(new Event('change', { bubbles: true })); });
   // Ítems que puede traer una cotización: los de la solicitud de cotización y cualquier otro aprobado sin comprar.
   const itemsCotizables = (r, c) => {
@@ -1279,6 +1341,7 @@ Enviar la cotización respondiendo a este mensaje o al correo ${esc(EMP.email ||
     }
   };
   App.toast = toast;
+  App.irEnlace = () => { S.admTab = 'enlace'; if (location.hash === '#/admin') paint(); else location.hash = '#/admin'; };
   App.activarEnlace = run(async ev => {
     ev.preventDefault(); const f = new FormData(ev.target);
     await store.activarBuzon(String(f.get('repo') || '').trim(), String(f.get('token') || '').trim());
@@ -1529,7 +1592,7 @@ Enviar la cotización respondiendo a este mensaje o al correo ${esc(EMP.email ||
 
   (async () => {
     try { S.user = await store.init(); }
-    catch (e) { S.user = null; $('#app').innerHTML = `<div class="login"><div class="card login-card"><div class="logo">📦</div><p>${esc(e.message)}</p></div></div>`; return; }
+    catch (e) { S.user = null; $('#app').innerHTML = `<div class="login"><div class="card login-card"><img class="login-logo" src="img/logo.png" alt=""><p>${esc(e.message)}</p></div></div>`; return; }
     await route();
     if (S.user) revisarBuzon();
   })();

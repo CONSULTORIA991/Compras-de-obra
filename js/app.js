@@ -91,16 +91,25 @@
     else estado = ['revision', 'aprobado', 'cotizando', 'cotizado', 'por_pagar', 'espera'].find(s => cnt[s]) || 'revision';
     return { cnt, total, fin, estado, cerrada: estado.startsWith('cerrada'), pendientes: cnt.espera || 0 };
   }
-  function cotTotals(items, precios, ivaPct, ivaInc, otros) {
-    const sub = items.reduce((s, i) => s + num(precios[i.id]) * num(i.cantidad), 0);
-    const pct = num(ivaPct) / 100;
-    const iva = ivaInc ? sub - sub / (1 + pct) : sub * pct;
+  // Totales de una cotización a partir de sus renglones [{ precio, cant, iva }] (IVA por renglón).
+  function cotTotals(lineas, ivaInc, otros) {
+    let sub = 0, iva = 0;
+    for (const l of lineas) {
+      const v = num(l.precio) * num(l.cant), p = num(l.iva) / 100;
+      sub += v; iva += ivaInc ? v - v / (1 + p) : v * p;
+    }
     return { subtotal: sub, iva, total: (ivaInc ? sub : sub + iva) + num(otros) };
   }
+  // Lo cotizado por ítem: cantidad, IVA y producto del proveedor (las cotizaciones viejas usan los del ítem).
+  const cantC = (c, i) => num((c.cantidades || {})[i.id] ?? i.cantidad);
+  const ivaC = (c, i) => num((c.ivas || {})[i.id] ?? c.ivaPct ?? 19);
+  const prodC = (c, i) => (c.productos || {})[i.id] || '';
+  const lineasC = (r, c) => cotItems(r, c).map(i => ({ precio: c.precios[i.id], cant: cantC(c, i), iva: ivaC(c, i) }));
+  const ivaTxt = (r, c) => { const s = [...new Set(cotItems(r, c).map(i => ivaC(c, i)))]; return s.length === 1 ? s[0] + '%' : 'según renglón'; };
   const cotItems = (r, c) => c.itemIds.map(id => r.items.find(i => i.id === id)).filter(Boolean);
   const itemCompra = (r, i) => {
     const c = r.cotizaciones.find(c => ['aprobada', 'pagada'].includes(c.estado) && c.itemIds.includes(i.id));
-    return c ? { c, precio: num(c.precios[i.id]) } : null;
+    return c ? { c, precio: num(c.precios[i.id]), cant: cantC(c, i), producto: prodC(c, i) } : null;
   };
   const allCots = () => S.reqs.flatMap(r => (r.cotizaciones || []).map(c => ({ r, c })));
   const log = (r, accion, detalle) => r.eventos.push({ t: now(), uid: S.user.id, por: S.user.nombre, accion, detalle: detalle || '' });
@@ -480,7 +489,7 @@
     return `<div class="it"><span class="it-n">${k + 1}</span>
       <div class="it-main"><b>${esc(i.descripcion)}</b><span class="muted">${i.cantidad} ${esc(i.unidad)}${i.cantidadSolicitada != null ? ` <s title="Cantidad solicitada">${i.cantidadSolicitada}</s>` : ''}</span>
         ${i.nota ? `<div class="it-note">💬 ${esc(i.nota)} <span class="muted">— ${esc(i.decididoPorNombre || '')}</span></div>` : ''}
-        ${ic ? `<div class="it-note">🏪 ${esc(ic.c.proveedorNombre)} · ${money(ic.precio)} c/u · ${ic.c.codigo}</div>` : ''}</div>
+        ${ic ? `<div class="it-note">🏪 ${esc(ic.c.proveedorNombre)}${ic.producto ? ' · ' + esc(ic.producto) : ''} · ${ic.cant !== num(i.cantidad) ? `<b>${ic.cant} ${esc(i.unidad)}</b> · ` : ''}${money(ic.precio)} c/u · ${ic.c.codigo}</div>` : ''}</div>
       <div class="it-st">${badge(ITEM_EST, st)}</div></div>`;
   }
   function revisionHtml(r, items) {
@@ -523,13 +532,14 @@
     const conPrecios = c.fechaRecibida;
     return `<article class="cot st-${c.estado}">
       <header><div><b>${c.codigo}</b> · ${esc(c.proveedorNombre)}</div>${badge(COT_EST, c.estado)}</header>
-      <table class="tbl"><thead><tr><th>Ítem</th><th class="r">Cant.</th>${conPrecios ? '<th class="r">Vr. unit.</th><th class="r">Subtotal</th>' : ''}</tr></thead><tbody>
-        ${its.map(i => `<tr><td>${esc(i.descripcion)}</td><td class="r">${i.cantidad} ${esc(i.unidad)}</td>${conPrecios ? `<td class="r">${money(c.precios[i.id])}</td><td class="r">${money(num(c.precios[i.id]) * i.cantidad)}</td>` : ''}</tr>`).join('')}
+      <div class="scroll-x"><table class="tbl"><thead><tr><th>Ítem</th><th class="r">Cant.</th>${conPrecios ? '<th class="r">Vr. unit.</th><th class="r">Subtotal</th>' : ''}</tr></thead><tbody>
+        ${its.map(i => { const q = conPrecios ? cantC(c, i) : num(i.cantidad); return `<tr><td>${esc(i.descripcion)}${conPrecios && prodC(c, i) ? `<br><small class="muted">${esc(prodC(c, i))}${ivaC(c, i) !== 19 ? ' · IVA ' + ivaC(c, i) + '%' : ''}</small>` : ''}</td>
+          <td class="r">${q} ${esc(i.unidad)}${conPrecios && q !== num(i.cantidad) ? `<br><small class="muted" title="Cantidad pedida">pedido: ${i.cantidad}</small>` : ''}</td>${conPrecios ? `<td class="r">${money(c.precios[i.id])}</td><td class="r">${money(num(c.precios[i.id]) * q)}</td>` : ''}</tr>`; }).join('')}
       </tbody>${conPrecios ? `<tfoot>
         <tr><td colspan="3" class="r">Subtotal${c.ivaInc ? ' (IVA incluido)' : ''}</td><td class="r">${money(c.subtotal)}</td></tr>
-        <tr><td colspan="3" class="r">IVA ${c.ivaPct}%${c.ivaInc ? ' (incluido)' : ''}</td><td class="r">${money(c.iva)}</td></tr>
+        <tr><td colspan="3" class="r">IVA ${ivaTxt(r, c)}${c.ivaInc ? ' (incluido)' : ''}</td><td class="r">${money(c.iva)}</td></tr>
         ${num(c.otros) ? `<tr><td colspan="3" class="r">Flete / otros</td><td class="r">${money(c.otros)}</td></tr>` : ''}
-        <tr class="tot"><td colspan="3" class="r">Total</td><td class="r">${money(c.total)}</td></tr></tfoot>` : ''}</table>
+        <tr class="tot"><td colspan="3" class="r">Total</td><td class="r">${money(c.total)}</td></tr></tfoot>` : ''}</table></div>
       <dl class="meta sm">
         <div><dt>Solicitada</dt><dd>${fdt(c.fechaSolicitud)} · ${esc(c.solicitadaPorNombre || '')}</dd></div>
         ${c.fechaLimite ? `<div><dt>Responder antes de</dt><dd>${fdate(c.fechaLimite + 'T12:00:00')}</dd></div>` : ''}
@@ -554,7 +564,7 @@
       ${its.map(i => {
         const ps = cs.map(c => c.precios[i.id] != null && c.itemIds.includes(i.id) ? num(c.precios[i.id]) : null);
         const min = Math.min(...ps.filter(p => p != null));
-        return `<tr><td>${esc(i.descripcion)} <span class="muted">(${i.cantidad} ${esc(i.unidad)})</span></td>${ps.map(p => `<td class="r ${p === min ? 'best' : ''}">${p == null ? '<span class="muted">No cotizó</span>' : money(p)}</td>`).join('')}</tr>`;
+        return `<tr><td>${esc(i.descripcion)} <span class="muted">(${i.cantidad} ${esc(i.unidad)})</span></td>${ps.map((p, k) => { const q = p == null ? 0 : cantC(cs[k], i); return `<td class="r ${p === min ? 'best' : ''}">${p == null ? '<span class="muted">No cotizó</span>' : money(p) + (q !== num(i.cantidad) ? `<br><small>cotiza ${q}</small>` : '')}</td>`; }).join('')}</tr>`;
       }).join('')}</tbody>
       <tfoot><tr class="tot"><td>Total</td>${cs.map(c => `<td class="r ${c.total === minTot ? 'best' : ''}">${money(c.total)}</td>`).join('')}</tr>
       <tr><td>Entrega / pago</td>${cs.map(c => `<td class="r sm">${esc(c.entrega || '—')}<br>${esc(c.formaPago || '')}</td>`).join('')}</tr></tfoot></table></div>
@@ -702,7 +712,7 @@ Enviar la cotización respondiendo a este mensaje o al correo ${esc(EMP.email ||
     const mat = {};
     for (const { r, c } of cots) for (const i of cotItems(r, c)) {
       const k = i.descripcion.trim().toLowerCase(); const x = mat[k] = mat[k] || { d: i.descripcion, u: i.unidad, cant: 0, valor: 0, provs: new Set() };
-      x.cant += num(i.cantidad); x.valor += num(c.precios[i.id]) * num(i.cantidad); x.provs.add(c.proveedorNombre);
+      x.cant += cantC(c, i); x.valor += num(c.precios[i.id]) * cantC(c, i); x.provs.add(c.proveedorNombre);
     }
     const matL = Object.values(mat).sort((a, b) => b.valor - a.valor).slice(0, 10);
 
@@ -973,18 +983,28 @@ Enviar la cotización respondiendo a este mensaje o al correo ${esc(EMP.email ||
   App.modalRespuesta = (id, cid) => {
     const r = S.reqs.find(x => x.id === id), c = r.cotizaciones.find(x => x.id === cid);
     const its = cotItems(r, c);
-    modal(`Cotización ${c.codigo} · ${esc(c.proveedorNombre)}`, `<form id="fCot" onsubmit="App.guardarCot(event,'${id}','${cid}')" oninput="App.calcCot()">
+    S.cotForm = { id, cid };
+    modal(`Cotización ${c.codigo} · ${esc(c.proveedorNombre)}`, `<form id="fCot" onsubmit="App.guardarCot(event,'${id}','${cid}')" oninput="App.calcCot()" onchange="App.calcCot()">
       <div class="lectura">
         <label>📄 Cotización del proveedor (PDF o foto)<input type="file" name="archivo" accept="application/pdf,image/*" onchange="App.leerCot(this,'${id}','${cid}')"></label>
-        <p class="muted sm" id="cotLectura">Al elegir el archivo, la app lo lee y llena los precios automáticamente. Revise los datos antes de guardar.</p>
+        <p class="muted sm" id="cotLectura">Al elegir el archivo, la app lo lee y llena el producto, la cantidad, el IVA y el precio de cada renglón. Revise los datos antes de guardar.</p>
       </div>
-      <p class="muted sm">Valor unitario de cada ítem. Deje en blanco los ítems que el proveedor no cotizó.</p>
-      <div class="scroll-x"><table class="tbl"><thead><tr><th>Ítem</th><th class="r">Cant.</th><th class="r">Vr. unitario</th><th class="r">Subtotal</th></tr></thead><tbody>
-      ${its.map(i => `<tr><td>${esc(i.descripcion)}</td><td class="r">${i.cantidad} ${esc(i.unidad)}</td><td class="r"><input class="money" type="number" min="0" step="any" inputmode="decimal" name="p_${i.id}" data-cant="${i.cantidad}" value="${c.precios[i.id] ?? ''}"></td><td class="r" id="st_${i.id}">—</td></tr>`).join('')}
+      <h3>Ítems pedidos</h3>
+      <p class="muted sm">Deje el precio en blanco en los ítems que el proveedor no cotizó.</p>
+      <div class="scroll-x"><table class="tbl cotform"><thead><tr><th>Ítem pedido</th><th>Producto del proveedor</th><th class="r">Cant.</th><th class="r">IVA</th><th class="r">Vr. unitario</th><th class="r">Subtotal</th></tr></thead><tbody>
+      ${its.map(i => `<tr class="rq" data-id="${i.id}"><td>${esc(i.descripcion)}<br><small class="muted">pedido: ${i.cantidad} ${esc(i.unidad)}</small></td>
+        <td><input name="prod_${i.id}" value="${esc(prodC(c, i))}" placeholder="Como lo escribe el proveedor"></td>
+        <td class="r"><input class="qty-in" type="number" min="0" step="any" inputmode="decimal" name="q_${i.id}" value="${cantC(c, i)}"></td>
+        <td class="r">${ivaSelect('iva_' + i.id, ivaC(c, i))}</td>
+        <td class="r"><input class="money" type="number" min="0" step="any" inputmode="decimal" name="p_${i.id}" value="${c.precios[i.id] ?? ''}"></td>
+        <td class="r" id="st_${i.id}">—</td></tr>`).join('')}
       </tbody></table></div>
-      <div class="grid3">
-        <label>IVA %<input type="number" name="ivaPct" value="${c.ivaPct ?? 19}" min="0" step="any"></label>
-        <label>Flete / otros<input type="number" name="otros" value="${c.otros || 0}" min="0" step="any"></label>
+      <div id="extrasBox" hidden><h3>Renglones de la cotización que no están en la solicitud</h3>
+        <p class="muted sm">Elija si se agregan a la solicitud como ítems nuevos, si corresponden a un ítem pedido o si no se incluyen.</p>
+        <div class="scroll-x"><table class="tbl cotform"><thead><tr><th>Producto del proveedor</th><th class="r">Cant.</th><th>Und.</th><th class="r">IVA</th><th class="r">Vr. unitario</th><th>¿Qué hacer?</th></tr></thead><tbody id="extras"></tbody></table></div></div>
+      <button type="button" class="btn sm ghost" onclick="App.addExtra()">＋ Renglón adicional</button>
+      <div class="grid3 mt">
+        <label>Flete / otros (valor final)<input type="number" name="otros" value="${c.otros || 0}" min="0" step="any"></label>
         <label class="check mt"><input type="checkbox" name="ivaInc" ${c.ivaInc ? 'checked' : ''}> Los precios ya incluyen IVA</label>
       </div>
       <div class="totbox" id="cotTot"></div>
@@ -998,43 +1018,89 @@ Enviar la cotización respondiendo a este mensaje o al correo ${esc(EMP.email ||
       <div class="actions"><button class="btn primary">Guardar y enviar a aprobación</button></div></form>`, true);
     App.calcCot();
   };
+  function ivaSelect(name, val) {
+    const v = num(val), ops = [19, 5, 0].includes(v) ? [19, 5, 0] : [19, 5, 0, v];
+    return `<select name="${name}" class="iva-sel">${ops.map(o => `<option value="${o}"${o === v ? ' selected' : ''}>${o}%</option>`).join('')}</select>`;
+  }
+  let nExtra = 0;
+  function extraHtml(d, items) {
+    const k = nExtra++;
+    const dest = d.dest || 'nuevo';
+    return `<tr class="ex" data-k="${k}">
+      <td><input name="exprod_${k}" value="${esc(d.producto || '')}" placeholder="Producto"></td>
+      <td class="r"><input class="qty-in" type="number" min="0" step="any" inputmode="decimal" name="exq_${k}" value="${d.cantidad ?? 1}"></td>
+      <td><select name="exu_${k}">${UNIDADES.map(u => `<option${u === (d.unidad || 'und') ? ' selected' : ''}>${u}</option>`).join('')}</select></td>
+      <td class="r">${ivaSelect('exiva_' + k, d.iva ?? 19)}</td>
+      <td class="r"><input class="money" type="number" min="0" step="any" inputmode="decimal" name="exp_${k}" value="${d.precio ?? ''}"></td>
+      <td><select name="exdest_${k}"><option value="nuevo"${dest === 'nuevo' ? ' selected' : ''}>➕ Agregar como ítem nuevo</option><option value="no"${dest === 'no' ? ' selected' : ''}>No incluir</option>
+        ${items.map(i => `<option value="${i.id}"${dest === i.id ? ' selected' : ''}>= ${esc(i.descripcion)}</option>`).join('')}</select></td></tr>`;
+  }
+  App.addExtra = (d = {}) => {
+    const { id, cid } = S.cotForm || {}; const r = S.reqs.find(x => x.id === id); if (!r) return;
+    const c = r.cotizaciones.find(x => x.id === cid);
+    $('#extras').insertAdjacentHTML('beforeend', extraHtml(d, cotItems(r, c)));
+    $('#extrasBox').hidden = false; App.calcCot();
+  };
+  // Lee el formulario: lo cotizado por cada ítem pedido y los renglones nuevos (los extras pueden reemplazar a un ítem).
+  function leerFormCot(form) {
+    const el = n => form.elements[n];
+    const porItem = {}, nuevos = [];
+    $$('tr.rq', form).forEach(tr => {
+      const i = tr.dataset.id, p = num(el('p_' + i).value);
+      if (p > 0) porItem[i] = { precio: p, cant: num(el('q_' + i).value) || 0, iva: num(el('iva_' + i).value), prod: el('prod_' + i).value.trim() };
+    });
+    $$('tr.ex', form).forEach(tr => {
+      const k = tr.dataset.k, dest = el('exdest_' + k).value, p = num(el('exp_' + k).value);
+      if (dest === 'no' || !(p > 0)) return;
+      const d = { precio: p, cant: num(el('exq_' + k).value) || 0, iva: num(el('exiva_' + k).value), prod: el('exprod_' + k).value.trim(), unidad: el('exu_' + k).value };
+      if (dest === 'nuevo') { if (d.prod) nuevos.push(d); } else porItem[dest] = d;
+    });
+    return { porItem, nuevos };
+  }
   App.leerCot = async (input, id, cid) => {
     const file = input.files && input.files[0]; if (!file) return;
     const f = $('#fCot'), st = $('#cotLectura');
     const r = S.reqs.find(x => x.id === id), c = r.cotizaciones.find(x => x.id === cid);
     const items = cotItems(r, c);
     let clave = null; try { clave = await store.getClaudeKey(); } catch (e) { }
-    if (!window.LectorCot) { st.textContent = 'El lector no está disponible.'; return; }
+    if (!window.LectorCot) { st.textContent = 'El lector no está disponible. Recargue la página (Ctrl + F5).'; return; }
     st.className = 'sm lect-trab'; st.textContent = clave ? '⏳ Leyendo la cotización con Claude…' : '⏳ Leyendo la cotización…';
     $$('.auto', f).forEach(x => x.classList.remove('auto'));
     try {
       const res = await window.LectorCot.leer(file, items, clave);
       const d = res.datos;
-      if (!d) { st.className = 'sm lect-mal'; st.textContent = '⚠️ ' + res.error + ' Ingrese los precios a mano; el archivo se guardará igual.'; return; }
-      const marcar = el => el.classList.add('auto');
-      let n = 0;
-      items.forEach(it => {
-        const inp = f.elements['p_' + it.id];
-        if (d.precios[it.id] != null) { inp.value = Math.round(d.precios[it.id] * 100) / 100; marcar(inp); n++; }
-      });
-      if (d.ivaPct != null && isFinite(d.ivaPct)) { f.ivaPct.value = d.ivaPct; marcar(f.ivaPct); }
-      if (d.ivaInc != null) { f.ivaInc.checked = !!d.ivaInc; marcar(f.ivaInc.parentNode); }
-      if (d.otros) { f.otros.value = Math.round(d.otros); marcar(f.otros); }
-      for (const k of ['entrega', 'formaPago', 'validez']) if (d[k]) { f[k].value = d[k]; marcar(f[k]); }
-      const notas = Object.entries(d.notas || {}).map(([iid, t]) => `${(items.find(i => i.id === iid) || {}).descripcion}: ${t}`);
-      if (d.nota) notas.push(d.nota);
-      if (notas.length && !f.nota.value.trim()) { f.nota.value = notas.join(' · '); marcar(f.nota); }
+      if (!d || !d.lineas.length) { st.className = 'sm lect-mal'; st.textContent = '⚠️ ' + (res.error || 'No encontré renglones con precio.') + ' Ingrese los datos a mano; el archivo se guardará igual.'; return; }
+      const marcar = el => el && el.classList.add('auto');
+      const E = n => f.elements[n];
+      $('#extras').innerHTML = ''; $('#extrasBox').hidden = true;
+      let asociados = 0;
+      for (const l of d.lineas) {
+        if (l.itemId && E('p_' + l.itemId)) {
+          const i = l.itemId; asociados++;
+          E('p_' + i).value = Math.round(l.precio * 100) / 100; marcar(E('p_' + i));
+          E('q_' + i).value = l.cantidad; marcar(E('q_' + i));
+          if (l.producto) { E('prod_' + i).value = l.producto; marcar(E('prod_' + i)); }
+          const sel = E('iva_' + i);
+          if (l.iva != null) { if (![...sel.options].some(o => num(o.value) === num(l.iva))) sel.insertAdjacentHTML('beforeend', `<option value="${l.iva}">${l.iva}%</option>`); sel.value = String(num(l.iva)); marcar(sel); }
+        } else App.addExtra({ producto: l.producto, cantidad: l.cantidad, unidad: l.unidad, iva: l.iva, precio: Math.round(l.precio * 100) / 100 });
+      }
+      $$('#extras input, #extras select').forEach(marcar);
+      if (d.ivaInc != null) { E('ivaInc').checked = !!d.ivaInc; marcar(E('ivaInc').parentNode); }
+      if (d.otros) { E('otros').value = Math.round(d.otros); marcar(E('otros')); }
+      for (const k of ['entrega', 'formaPago', 'validez']) if (d[k]) { E(k).value = d[k]; marcar(E(k)); }
+      if (d.nota && !E('nota').value.trim()) { E('nota').value = d.nota; marcar(E('nota')); }
       App.calcCot();
-      const faltan = items.filter(it => d.precios[it.id] == null).map(it => it.descripcion);
-      let msg = `${res.fuente === 'claude' ? '✓ Leída con Claude' : '✓ Leída'}: llené el precio de ${n} de ${items.length} ítem(s). Los campos en verde vienen de la cotización; revíselos.`;
-      if (faltan.length) msg += ` Sin precio: ${faltan.join(', ')}.`;
+      const extras = d.lineas.length - asociados;
+      const faltan = items.filter(it => !d.lineas.some(l => l.itemId === it.id)).map(it => it.descripcion);
+      let msg = `${res.fuente === 'claude' ? '✓ Leída con Claude' : '✓ Leída'}: ${d.lineas.length} renglón(es); ${asociados} corresponden a ítems pedidos${extras ? ` y ${extras} no estaban en la solicitud (abajo: elija qué hacer con ellos)` : ''}. Los campos en verde vienen de la cotización; revíselos.`;
+      if (faltan.length) msg += ` Sin cotizar: ${faltan.join(', ')}.`;
       if (d.total) {
-        const calc = cotTotals(items, Object.fromEntries(items.map(it => [it.id, num(f.elements['p_' + it.id].value)])), f.ivaPct.value, f.ivaInc.checked, f.otros.value).total;
-        if (Math.abs(calc - d.total) / d.total > 0.01) msg += ` ⚠️ El total del documento es ${money(d.total)} y el calculado es ${money(calc)}: verifique.`;
+        const calc = App.calcCot();
+        if (Math.abs(calc - d.total) / d.total > 0.005) msg += ` ⚠️ El total del documento es ${money(d.total)} y el calculado es ${money(calc)}: verifique.`;
         else msg += ` El total coincide con el documento (${money(d.total)}).`;
       }
       if (res.error) msg += ' ' + res.error;
-      st.className = 'sm ' + (n && !faltan.length ? 'lect-ok' : 'lect-mal'); st.textContent = msg;
+      st.className = 'sm ' + (!faltan.length ? 'lect-ok' : 'lect-mal'); st.textContent = msg;
     } catch (e) {
       console.error(e); st.className = 'sm lect-mal'; st.textContent = '⚠️ No se pudo leer el archivo (' + (e.message || e) + '). Ingrese los datos a mano.';
     }
@@ -1046,35 +1112,51 @@ Enviar la cotización respondiendo a este mensaje o al correo ${esc(EMP.email ||
   });
   App.quitarClaude = run(async () => { await store.setClaudeKey(null); toast('Lectura con Claude desactivada'); paint(); });
   App.calcCot = () => {
-    const f = $('#fCot'); if (!f) return;
-    let sub = 0;
-    $$('input[name^=p_]', f).forEach(inp => { const v = num(inp.value) * num(inp.dataset.cant); sub += v; $('#st_' + inp.name.slice(2)).textContent = inp.value ? money(v) : '—'; });
-    const pct = num(f.ivaPct.value) / 100, inc = f.ivaInc.checked, otros = num(f.otros.value);
-    const iva = inc ? sub - sub / (1 + pct) : sub * pct, total = (inc ? sub : sub + iva) + otros;
-    $('#cotTot').innerHTML = `<span>Subtotal${inc ? ' (IVA incl.)' : ''}: <b>${money(sub)}</b></span><span>IVA: <b>${money(iva)}</b></span>${otros ? `<span>Otros: <b>${money(otros)}</b></span>` : ''}<span class="big">Total: <b>${money(total)}</b></span>`;
+    const f = $('#fCot'); if (!f) return 0;
+    const { porItem, nuevos } = leerFormCot(f);
+    $$('tr.rq', f).forEach(tr => {
+      const i = tr.dataset.id, d = porItem[i];
+      $('#st_' + i).textContent = d ? money(d.precio * d.cant) : '—';
+    });
+    const lineas = [...Object.values(porItem), ...nuevos];
+    const inc = f.ivaInc.checked, otros = num(f.otros.value);
+    const t = cotTotals(lineas, inc, otros);
+    $('#cotTot').innerHTML = `<span>Subtotal${inc ? ' (IVA incl.)' : ''}: <b>${money(t.subtotal)}</b></span><span>IVA: <b>${money(t.iva)}</b></span>${otros ? `<span>Otros: <b>${money(otros)}</b></span>` : ''}<span class="big">Total: <b>${money(t.total)}</b></span>`;
+    return t.total;
   };
   App.guardarCot = run(async (ev, id, cid) => {
-    ev.preventDefault(); const f = new FormData(ev.target);
+    ev.preventDefault(); const form = ev.target, f = new FormData(form);
     const r0 = S.reqs.find(x => x.id === id), c0 = r0.cotizaciones.find(x => x.id === cid);
-    const precios = {};
-    c0.itemIds.forEach(i => { const v = f.get('p_' + i); if (v !== '' && v != null && num(v) > 0) precios[i] = num(v); });
-    if (!Object.keys(precios).length) throw new Error('Ingrese el precio de al menos un ítem');
+    const { porItem, nuevos } = leerFormCot(form);
+    if (!Object.keys(porItem).length && !nuevos.length) throw new Error('Ingrese el precio de al menos un ítem');
+    if ([...Object.values(porItem), ...nuevos].some(d => !(d.cant > 0))) throw new Error('Revise las cantidades: todas deben ser mayores que cero');
+    const nuevosId = nuevos.map(() => newId());
     let archivo = c0.archivo || null;
     const file = f.get('archivo'); if (file && file.size) archivo = await store.uploadFile(file, id);
     const res = await mutate(id, r => {
       const c = r.cotizaciones.find(x => x.id === cid);
       if (!['solicitada', 'recibida'].includes(c.estado)) throw new Error('Esta cotización ya fue decidida');
-      c.itemIds = c.itemIds.filter(i => precios[i] != null);
-      c.precios = precios;
-      Object.assign(c, cotTotals(cotItems(r, c), precios, f.get('ivaPct'), !!f.get('ivaInc'), f.get('otros')), {
-        ivaPct: num(f.get('ivaPct')), ivaInc: !!f.get('ivaInc'), otros: num(f.get('otros')),
-        entrega: String(f.get('entrega') || '').trim(), formaPago: String(f.get('formaPago') || '').trim(), validez: String(f.get('validez') || '').trim(),
-        notaCompras: String(f.get('nota') || '').trim(), archivo, estado: 'recibida', fechaRecibida: now(), recibidaPor: S.user.id, recibidaPorNombre: S.user.nombre
+      const t = now();
+      nuevos.forEach((d, k) => {
+        if (r.items.some(i => i.id === nuevosId[k])) return;
+        r.items.push({ id: nuevosId[k], descripcion: d.prod, cantidad: d.cant, unidad: d.unidad, estado: 'aprobado', creado: t,
+          nota: 'Agregado por compras desde la cotización ' + c.codigo, decididoEn: t, decididoPor: S.user.id, decididoPorNombre: S.user.nombre });
       });
+      const todo = { ...porItem }; nuevos.forEach((d, k) => { todo[nuevosId[k]] = d; });
+      c.itemIds = c.itemIds.filter(i => todo[i]).concat(nuevosId.filter(i => !c.itemIds.includes(i)));
+      c.precios = {}; c.cantidades = {}; c.ivas = {}; c.productos = {};
+      for (const i of c.itemIds) { const d = todo[i]; c.precios[i] = d.precio; c.cantidades[i] = d.cant; c.ivas[i] = d.iva; if (d.prod) c.productos[i] = d.prod; }
+      const ivasUnicos = [...new Set(Object.values(c.ivas))];
+      Object.assign(c, cotTotals(Object.values(todo), !!f.get('ivaInc'), f.get('otros')), {
+        ivaPct: ivasUnicos.length === 1 ? ivasUnicos[0] : null, ivaInc: !!f.get('ivaInc'), otros: num(f.get('otros')),
+        entrega: String(f.get('entrega') || '').trim(), formaPago: String(f.get('formaPago') || '').trim(), validez: String(f.get('validez') || '').trim(),
+        notaCompras: String(f.get('nota') || '').trim(), archivo, estado: 'recibida', fechaRecibida: t, recibidaPor: S.user.id, recibidaPorNombre: S.user.nombre
+      });
+      if (nuevos.length) log(r, 'Ítems agregados desde la cotización', nuevos.map(d => `${d.cant} ${d.unidad} ${d.prod}`).join(' · '));
       log(r, 'Cotización recibida', `${c.codigo} · ${c.proveedorNombre} · ${money(c.total)}${c.notaCompras ? ' · ' + c.notaCompras : ''}`);
     });
     const c = res.r.cotizaciones.find(x => x.id === cid);
-    await notificar(['jefe'], `${code(res.r)}: cotización ${c.codigo} de ${c.proveedorNombre} por ${money(c.total)} lista para aprobar`, id);
+    await notificar(['jefe'], `${code(res.r)}: cotización ${c.codigo} de ${c.proveedorNombre} por ${money(c.total)} lista para aprobar${nuevos.length ? ` (incluye ${nuevos.length} ítem(s) que no estaban en la solicitud)` : ''}`, id);
     cerrarModal(); toast('Cotización enviada a los jefes para aprobación'); paint();
   });
   App.anularCot = run(async (id, cid) => {
@@ -1217,11 +1299,11 @@ Enviar la cotización respondiendo a este mensaje o al correo ${esc(EMP.email ||
     descargar(`respaldo-compras-${today()}.json`, JSON.stringify(d, null, 2), 'application/json');
   });
   App.exportItems = () => {
-    const rows = [['Solicitud', 'Fecha', 'Proyecto', 'Solicitado por', 'Prioridad', 'Ítem', 'Cantidad', 'Unidad', 'Estado', 'Decidido por', 'Fecha decisión', 'Comentario jefe', 'Proveedor', 'Cotización', 'Vr. unitario', 'Vr. total (sin IVA)', 'Estado cotización', 'Fecha pago']];
+    const rows = [['Solicitud', 'Fecha', 'Proyecto', 'Solicitado por', 'Prioridad', 'Ítem', 'Cantidad pedida', 'Unidad', 'Estado', 'Decidido por', 'Fecha decisión', 'Comentario jefe', 'Proveedor', 'Producto del proveedor', 'Cantidad comprada', 'Cotización', 'Vr. unitario', 'Vr. total (sin IVA)', 'Estado cotización', 'Fecha pago']];
     for (const r of reqsReporte()) for (const i of r.items) {
       const ic = itemCompra(r, i);
       rows.push([code(r), r.creado.slice(0, 10), r.proyecto, r.solicitantes, r.prioridad, i.descripcion, i.cantidad, i.unidad, ITEM_EST[itemStage(r, i)].l, i.decididoPorNombre || '', (i.decididoEn || '').slice(0, 10), i.nota || '',
-        ic ? ic.c.proveedorNombre : '', ic ? ic.c.codigo : '', ic ? Math.round(ic.precio) : '', ic ? Math.round(ic.precio * i.cantidad) : '', ic ? COT_EST[ic.c.estado].l : '', ic && ic.c.pago ? ic.c.pago.fecha : '']);
+        ic ? ic.c.proveedorNombre : '', ic ? ic.producto : '', ic ? ic.cant : '', ic ? ic.c.codigo : '', ic ? Math.round(ic.precio) : '', ic ? Math.round(ic.precio * ic.cant) : '', ic ? COT_EST[ic.c.estado].l : '', ic && ic.c.pago ? ic.c.pago.fecha : '']);
     }
     descargar(`items-compras-${today()}.csv`, csv(rows), 'text/csv;charset=utf-8');
   };

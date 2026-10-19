@@ -180,7 +180,13 @@ td.best { background: var(--green-s); color: var(--green); font-weight: 700; }
 .tbl tfoot td { border-bottom: 0; padding-top: .3rem; padding-bottom: .3rem; }
 .tbl tr.tot td { font-weight: 700; font-size: 1rem; border-top: 2px solid var(--line); }
 .tbl.hover tbody tr { cursor: pointer; } .tbl.hover tbody tr:hover { background: var(--soft); }
-input.money { width: 130px; text-align: right; min-height: 36px; }
+input.money { width: 120px; text-align: right; min-height: 36px; }
+.cotform td { vertical-align: middle; }
+.cotform input, .cotform select { min-height: 36px; padding: .35rem .45rem; }
+.cotform input[name^=prod_], .cotform input[name^=exprod_] { min-width: 200px; }
+.cotform .qty-in { width: 80px; text-align: right; }
+.cotform .iva-sel { width: 78px; }
+.cotform select[name^=exdest_] { min-width: 190px; }
 .totbox { display: flex; flex-wrap: wrap; gap: .4rem 1.2rem; justify-content: flex-end; padding: .7rem .9rem; background: var(--soft); border-radius: 10px; margin: .4rem 0 1rem; }
 .totbox .big { font-size: 1.1rem; }
 .lectura { background: var(--pri-s); border: 1px dashed var(--pri); border-radius: 10px; padding: .75rem .9rem .5rem; margin-bottom: .9rem; }

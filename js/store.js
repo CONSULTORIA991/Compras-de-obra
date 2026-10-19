@@ -106,6 +106,8 @@
           .sort((a, b) => b.creado.localeCompare(a.creado)).slice(0, 50));
       },
       async markRead(ids) { load(); (db.notifs || []).forEach(n => { if (ids.includes(n.id)) n.leida = true; }); persist(); },
+      async getClaudeKey() { load(); return db.claudeKey || null; },
+      async setClaudeKey(k) { load(); if (k) db.claudeKey = k; else delete db.claudeKey; persist(); },
       reset() { try { localStorage.removeItem(KEY); } catch (e) { } }
     };
   }
@@ -184,6 +186,8 @@
         return chk(await sb.from('notificaciones').select('*').eq('user_id', me.id).order('creado', { ascending: false }).limit(50));
       },
       async markRead(ids) { if (ids.length) chk(await sb.from('notificaciones').update({ leida: true }).in('id', ids)); },
+      async getClaudeKey() { return null; },
+      async setClaudeKey() { throw new Error('La lectura con Claude no está disponible en el modo Supabase.'); },
       reset() { }
     };
   }
@@ -473,6 +477,8 @@
         if (!ids.length) return;
         await mutarDatos(d => { let n = 0; (d.notifs || []).forEach(x => { if (ids.includes(x.id) && !x.leida) { x.leida = true; n++; } }); if (!n) return false; });
       },
+      async getClaudeKey() { return (conf && conf.claudeKey) || null; },
+      async setClaudeKey(k) { await mutarConf(c => { if (k) c.claudeKey = k; else delete c.claudeKey; }); },
       reset() { }
     };
     return api;

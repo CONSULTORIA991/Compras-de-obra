@@ -183,6 +183,12 @@ td.best { background: var(--green-s); color: var(--green); font-weight: 700; }
 input.money { width: 130px; text-align: right; min-height: 36px; }
 .totbox { display: flex; flex-wrap: wrap; gap: .4rem 1.2rem; justify-content: flex-end; padding: .7rem .9rem; background: var(--soft); border-radius: 10px; margin: .4rem 0 1rem; }
 .totbox .big { font-size: 1.1rem; }
+.lectura { background: var(--pri-s); border: 1px dashed var(--pri); border-radius: 10px; padding: .75rem .9rem .5rem; margin-bottom: .9rem; }
+.lectura label { margin-bottom: .4rem; }
+.lectura p { margin: 0 0 .3rem; }
+.lect-trab { color: var(--pri); font-weight: 600; } .lect-ok { color: var(--green); font-weight: 600; } .lect-mal { color: var(--amber); font-weight: 600; }
+.auto { background: var(--green-s) !important; border-color: var(--green) !important; }
+label.check.auto { border-radius: 8px; padding: .2rem .4rem; }
 
 /* Tabs */
 .tabs { display: flex; gap: .3rem; border-bottom: 1px solid var(--line); margin-bottom: 1rem; overflow-x: auto; }

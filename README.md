@@ -78,6 +78,16 @@ péguelo en **Admin → Datos → Token de GitHub**.
 **Si alguien olvida su contraseña**, el administrador le asigna una nueva en Admin → Usuarios.
 Si una persona sale de la empresa, marque su usuario como **inactivo**.
 
+**Lectura automática de cotizaciones.** Al registrar la cotización de un proveedor, elija el PDF o
+la foto. La app la lee y llena los precios unitarios de cada ítem, el IVA, el flete, el tiempo
+de entrega, la forma de pago y la validez. Los campos llenados quedan en verde para revisarlos, y
+la app compara el total del documento con el total calculado.
+* Sin configurar nada, funciona el **lector propio** (gratis): PDF con texto, como los que
+  generan los programas de facturación.
+* Con una **clave de la API de Claude** (Admin → Datos), la lectura es más precisa y también
+  funciona con cotizaciones escaneadas y fotos de WhatsApp. Cada lectura cuesta unos pocos
+  centavos de dólar en su cuenta de Anthropic. La clave queda guardada cifrada.
+
 ## 3. Opcional: Supabase en lugar del repositorio
 
 La seguridad la da **Supabase** (plan gratuito): login con contraseña cifrada (bcrypt),

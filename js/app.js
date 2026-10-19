@@ -204,6 +204,13 @@
     $('#main').innerHTML = VIEWS[p](arg);
     if (p === 'nueva') { addRow('itemRows'); }
     if (p === 'requisiciones') pintarListaReqs();
+    if (p === 'admin' && S.admTab === 'datos' && $('#claudeEstado')) {
+      store.getClaudeKey().then(k => {
+        const e = $('#claudeEstado'); if (!e) return;
+        e.textContent = k ? '✓ Lectura con Claude activada.' : 'Lectura con Claude desactivada: se usa el lector propio (solo PDF con texto).';
+        $('#claudeQuitar').hidden = !k;
+      }).catch(() => { });
+    }
     window.scrollTo(0, 0);
   }
 
@@ -770,7 +777,13 @@ Enviar la cotización respondiendo a este mensaje o al correo ${esc(EMP.email ||
       ${DEMO ? `<button class="btn danger-ghost" onclick="App.resetDemo()">Reiniciar datos de demostración</button>` : ''}</div>
       <p class="muted sm">Modo actual: <b>${DEMO ? 'Demostración (datos en este navegador)' : GHM ? 'Datos cifrados en el repositorio de GitHub' : 'Supabase (base de datos en la nube)'}</b></p>
       ${GHM ? `<h2>Token de GitHub</h2><p class="muted">Cuando el token venza, la app dejará de guardar cambios. Cree uno nuevo (mismos permisos: solo este repositorio, Contents: Read and write) y péguelo aquí.</p>
-      <form class="row gap wrap" onsubmit="App.guardarToken(event)"><input name="token" type="password" autocomplete="off" placeholder="Token nuevo" style="max-width:360px"><button class="btn">Actualizar token</button></form>` : ''}`;
+      <form class="row gap wrap" onsubmit="App.guardarToken(event)"><input name="token" type="password" autocomplete="off" placeholder="Token nuevo" style="max-width:360px"><button class="btn">Actualizar token</button></form>` : ''}
+      ${store.mode !== 'supabase' ? `<h2>Lectura automática de cotizaciones</h2>
+      <p class="muted">Sin configurar nada, la app lee las cotizaciones en PDF con su lector propio. Con una clave de la API de Claude, la lectura es más precisa y también funciona con cotizaciones escaneadas y fotos. Cada lectura con Claude cuesta unos pocos centavos de dólar, que se cobran en su cuenta de Anthropic.</p>
+      <p id="claudeEstado" class="sm muted">Consultando…</p>
+      <form class="row gap wrap" onsubmit="App.guardarClaude(event)"><input name="clave" type="password" autocomplete="off" placeholder="Clave de la API de Claude (sk-ant-…)" style="max-width:360px"><button class="btn">Guardar clave</button>
+        <button type="button" class="btn danger-ghost" id="claudeQuitar" hidden onclick="App.quitarClaude()">Quitar clave</button></form>
+      <p class="muted sm">La clave se obtiene en console.anthropic.com → API Keys. ${GHM ? 'Queda guardada cifrada junto con los demás datos.' : ''}</p>` : ''}`;
     return `<section class="card"><h1>Administración</h1>
       <div class="tabs">${tabs.map(([k, l]) => `<button class="${S.admTab === k ? 'on' : ''}" onclick="App.admTab('${k}')">${l}</button>`).join('')}</div>${body}</section>`;
   }
@@ -961,7 +974,11 @@ Enviar la cotización respondiendo a este mensaje o al correo ${esc(EMP.email ||
     const r = S.reqs.find(x => x.id === id), c = r.cotizaciones.find(x => x.id === cid);
     const its = cotItems(r, c);
     modal(`Cotización ${c.codigo} · ${esc(c.proveedorNombre)}`, `<form id="fCot" onsubmit="App.guardarCot(event,'${id}','${cid}')" oninput="App.calcCot()">
-      <p class="muted sm">Ingrese el valor unitario de cada ítem. Deje en blanco los ítems que el proveedor no cotizó.</p>
+      <div class="lectura">
+        <label>📄 Cotización del proveedor (PDF o foto)<input type="file" name="archivo" accept="application/pdf,image/*" onchange="App.leerCot(this,'${id}','${cid}')"></label>
+        <p class="muted sm" id="cotLectura">Al elegir el archivo, la app lo lee y llena los precios automáticamente. Revise los datos antes de guardar.</p>
+      </div>
+      <p class="muted sm">Valor unitario de cada ítem. Deje en blanco los ítems que el proveedor no cotizó.</p>
       <div class="scroll-x"><table class="tbl"><thead><tr><th>Ítem</th><th class="r">Cant.</th><th class="r">Vr. unitario</th><th class="r">Subtotal</th></tr></thead><tbody>
       ${its.map(i => `<tr><td>${esc(i.descripcion)}</td><td class="r">${i.cantidad} ${esc(i.unidad)}</td><td class="r"><input class="money" type="number" min="0" step="any" inputmode="decimal" name="p_${i.id}" data-cant="${i.cantidad}" value="${c.precios[i.id] ?? ''}"></td><td class="r" id="st_${i.id}">—</td></tr>`).join('')}
       </tbody></table></div>
@@ -977,11 +994,57 @@ Enviar la cotización respondiendo a este mensaje o al correo ${esc(EMP.email ||
         <label>Validez<input name="validez" value="${esc(c.validez || '')}" placeholder="Ej: 15 días"></label>
       </div>
       <datalist id="fpagos"><option>Contado</option><option>Contraentrega</option><option>Anticipo 50%</option><option>Crédito 30 días</option><option>Crédito 60 días</option></datalist>
-      <label>Archivo de la cotización (PDF o foto)<input type="file" name="archivo" accept="application/pdf,image/*"></label>
       <label>Nota para los jefes<textarea name="nota" rows="2" placeholder="Ej: es el único que tiene entrega inmediata">${esc(c.notaCompras || '')}</textarea></label>
       <div class="actions"><button class="btn primary">Guardar y enviar a aprobación</button></div></form>`, true);
     App.calcCot();
   };
+  App.leerCot = async (input, id, cid) => {
+    const file = input.files && input.files[0]; if (!file) return;
+    const f = $('#fCot'), st = $('#cotLectura');
+    const r = S.reqs.find(x => x.id === id), c = r.cotizaciones.find(x => x.id === cid);
+    const items = cotItems(r, c);
+    let clave = null; try { clave = await store.getClaudeKey(); } catch (e) { }
+    if (!window.LectorCot) { st.textContent = 'El lector no está disponible.'; return; }
+    st.className = 'sm lect-trab'; st.textContent = clave ? '⏳ Leyendo la cotización con Claude…' : '⏳ Leyendo la cotización…';
+    $$('.auto', f).forEach(x => x.classList.remove('auto'));
+    try {
+      const res = await window.LectorCot.leer(file, items, clave);
+      const d = res.datos;
+      if (!d) { st.className = 'sm lect-mal'; st.textContent = '⚠️ ' + res.error + ' Ingrese los precios a mano; el archivo se guardará igual.'; return; }
+      const marcar = el => el.classList.add('auto');
+      let n = 0;
+      items.forEach(it => {
+        const inp = f.elements['p_' + it.id];
+        if (d.precios[it.id] != null) { inp.value = Math.round(d.precios[it.id] * 100) / 100; marcar(inp); n++; }
+      });
+      if (d.ivaPct != null && isFinite(d.ivaPct)) { f.ivaPct.value = d.ivaPct; marcar(f.ivaPct); }
+      if (d.ivaInc != null) { f.ivaInc.checked = !!d.ivaInc; marcar(f.ivaInc.parentNode); }
+      if (d.otros) { f.otros.value = Math.round(d.otros); marcar(f.otros); }
+      for (const k of ['entrega', 'formaPago', 'validez']) if (d[k]) { f[k].value = d[k]; marcar(f[k]); }
+      const notas = Object.entries(d.notas || {}).map(([iid, t]) => `${(items.find(i => i.id === iid) || {}).descripcion}: ${t}`);
+      if (d.nota) notas.push(d.nota);
+      if (notas.length && !f.nota.value.trim()) { f.nota.value = notas.join(' · '); marcar(f.nota); }
+      App.calcCot();
+      const faltan = items.filter(it => d.precios[it.id] == null).map(it => it.descripcion);
+      let msg = `${res.fuente === 'claude' ? '✓ Leída con Claude' : '✓ Leída'}: llené el precio de ${n} de ${items.length} ítem(s). Los campos en verde vienen de la cotización; revíselos.`;
+      if (faltan.length) msg += ` Sin precio: ${faltan.join(', ')}.`;
+      if (d.total) {
+        const calc = cotTotals(items, Object.fromEntries(items.map(it => [it.id, num(f.elements['p_' + it.id].value)])), f.ivaPct.value, f.ivaInc.checked, f.otros.value).total;
+        if (Math.abs(calc - d.total) / d.total > 0.01) msg += ` ⚠️ El total del documento es ${money(d.total)} y el calculado es ${money(calc)}: verifique.`;
+        else msg += ` El total coincide con el documento (${money(d.total)}).`;
+      }
+      if (res.error) msg += ' ' + res.error;
+      st.className = 'sm ' + (n && !faltan.length ? 'lect-ok' : 'lect-mal'); st.textContent = msg;
+    } catch (e) {
+      console.error(e); st.className = 'sm lect-mal'; st.textContent = '⚠️ No se pudo leer el archivo (' + (e.message || e) + '). Ingrese los datos a mano.';
+    }
+  };
+  App.guardarClaude = run(async ev => {
+    ev.preventDefault(); const k = String(new FormData(ev.target).get('clave') || '').trim();
+    if (!/^sk-ant-/.test(k)) throw new Error('La clave de la API de Claude empieza por "sk-ant-"');
+    await store.setClaudeKey(k); ev.target.reset(); toast('Lectura con Claude activada'); paint();
+  });
+  App.quitarClaude = run(async () => { await store.setClaudeKey(null); toast('Lectura con Claude desactivada'); paint(); });
   App.calcCot = () => {
     const f = $('#fCot'); if (!f) return;
     let sub = 0;

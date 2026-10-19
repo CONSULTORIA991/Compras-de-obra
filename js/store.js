@@ -188,5 +188,300 @@
     };
   }
 
-  window.createStore = () => (cfg.SUPABASE_URL && cfg.SUPABASE_ANON_KEY) ? SupaStore() : LocalStore();
+  /* ------------------------------------------- GITHUB (cifrado) */
+  /*
+   * Igual que la app de PAGOS: los datos viven CIFRADOS en el mismo repositorio.
+   *   datos/usuarios.json   llave maestra envuelta con la contraseña de cada usuario
+   *   datos/config.enc      token de GitHub, usuarios y roles (cifrado)
+   *   datos/compras.enc     solicitudes, cotizaciones, pagos, proyectos, proveedores (cifrado)
+   *   datos/archivos/*      cotizaciones y soportes de pago (cifrados)
+   * Cifrado AES-256-GCM; contraseñas con PBKDF2-SHA256 de 600.000 iteraciones.
+   */
+  function GitHubStore() {
+    const enc = new TextEncoder(), dec = new TextDecoder(), ITER = 600000;
+    const R_USU = 'datos/usuarios.json', R_CONF = 'datos/config.enc', R_DATA = 'datos/compras.enc';
+    const rArch = n => 'datos/archivos/' + n;
+    const SES = 'compras-obra-sesion';
+    const API = 'https://api.github.com';
+    let gh = { owner: '', repo: '', branch: cfg.GITHUB_RAMA || 'main', token: '' };
+    let maestra = null, rawM = null, uid = null, conf = null, confEtag = null, cache = null, etag = null;
+
+    // --- cifrado
+    const b64 = u8 => { let s = ''; for (let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000)); return btoa(s); };
+    const unb64 = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
+    const aleatorio = n => crypto.getRandomValues(new Uint8Array(n));
+    async function idUsuario(u) {
+      const h = await crypto.subtle.digest('SHA-256', enc.encode('compras-obra:' + String(u).trim().toLowerCase()));
+      return [...new Uint8Array(h)].map(b => b.toString(16).padStart(2, '0')).join('');
+    }
+    async function llaveDeClave(clave, salt, iter) {
+      const base = await crypto.subtle.importKey('raw', enc.encode(clave), 'PBKDF2', false, ['deriveKey']);
+      return crypto.subtle.deriveKey({ name: 'PBKDF2', salt, iterations: iter || ITER, hash: 'SHA-256' }, base, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
+    }
+    const importar = raw => crypto.subtle.importKey('raw', raw, { name: 'AES-GCM' }, false, ['encrypt', 'decrypt']);
+    async function cifrar(llave, bytes) {
+      const iv = aleatorio(12);
+      const ct = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, llave, bytes));
+      const out = new Uint8Array(12 + ct.length); out.set(iv); out.set(ct, 12); return out;
+    }
+    const descifrar = async (llave, d) => new Uint8Array(await crypto.subtle.decrypt({ name: 'AES-GCM', iv: d.subarray(0, 12) }, llave, d.subarray(12)));
+    async function envolver(raw, clave) { const salt = aleatorio(16); return { salt: b64(salt), iter: ITER, llave: b64(await cifrar(await llaveDeClave(clave, salt, ITER), raw)) }; }
+    const desenvolver = async (e, clave) => descifrar(await llaveDeClave(clave, unb64(e.salt), e.iter), unb64(e.llave));
+    const cifrarJSON = (k, o) => cifrar(k, enc.encode(JSON.stringify(o)));
+    const descifrarJSON = async (k, d) => JSON.parse(dec.decode(await descifrar(k, d)));
+
+    // --- API de GitHub
+    function desdeUbicacion() {
+      if (cfg.GITHUB_OWNER && cfg.GITHUB_REPO) return { owner: cfg.GITHUB_OWNER, repo: cfg.GITHUB_REPO };
+      const host = location.hostname.toLowerCase();
+      if (!host.endsWith('.github.io')) return null;
+      const owner = host.slice(0, -'.github.io'.length);
+      const seg = location.pathname.split('/').filter(Boolean)[0];
+      return { owner, repo: seg && !/\.html?$/i.test(seg) ? seg : owner + '.github.io' };
+    }
+    const cab = extra => Object.assign({ Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28' }, gh.token ? { Authorization: 'Bearer ' + gh.token } : {}, extra || {});
+    const url = ruta => `${API}/repos/${gh.owner}/${gh.repo}/contents/${ruta.split('/').map(encodeURIComponent).join('/')}`;
+    async function fallo(r) {
+      let m = ''; try { m = (await r.json()).message || ''; } catch (e) { }
+      const err = new Error(
+        r.status === 401 ? 'El token de GitHub no es válido o venció. El administrador debe actualizarlo en Admin → Datos.' :
+        r.status === 403 && /rate limit/i.test(m) ? 'GitHub limitó temporalmente las consultas. Espere unos minutos e intente de nuevo.' :
+        r.status === 403 ? 'El token de GitHub no tiene permiso de escritura en este repositorio.' :
+        r.status === 404 ? 'No se encontró el repositorio o el token no tiene acceso a él.' :
+        'GitHub respondió con un error (' + r.status + (m ? ': ' + m : '') + ').');
+      err.status = r.status; err.conflicto = r.status === 409 || (r.status === 422 && /sha/i.test(m));
+      return err;
+    }
+    async function leer(ruta, op) {
+      op = op || {};
+      const r = await fetch(url(ruta) + '?ref=' + encodeURIComponent(gh.branch), { headers: cab(op.etag ? { 'If-None-Match': op.etag } : null), cache: 'no-store' });
+      if (r.status === 304) return { sinCambios: true };
+      if (r.status === 404) return null;
+      if (!r.ok) throw await fallo(r);
+      const j = await r.json();
+      const rb = await fetch(`${API}/repos/${gh.owner}/${gh.repo}/git/blobs/${j.sha}`, { headers: cab(), cache: 'no-store' });
+      if (!rb.ok) throw await fallo(rb);
+      return { sha: j.sha, bytes: unb64(((await rb.json()).content || '').replace(/\s/g, '')), etag: r.headers.get('ETag') };
+    }
+    async function leerPublico(ruta) {
+      try { return await leer(ruta); }
+      catch (e) {
+        const r = await fetch(ruta + '?t=' + Date.now(), { cache: 'no-store' });
+        if (r.status === 404) return null;
+        if (!r.ok) throw e;
+        return { sha: null, bytes: new Uint8Array(await r.arrayBuffer()) };
+      }
+    }
+    async function escribir(ruta, bytes, sha) {
+      const cuerpo = { message: 'Actualización', content: b64(bytes), branch: gh.branch };
+      if (sha) cuerpo.sha = sha;
+      const r = await fetch(url(ruta), { method: 'PUT', headers: cab({ 'Content-Type': 'application/json' }), body: JSON.stringify(cuerpo) });
+      if (!r.ok) throw await fallo(r);
+      return (await r.json()).content.sha;
+    }
+    async function verificar() {
+      const r = await fetch(`${API}/repos/${gh.owner}/${gh.repo}`, { headers: cab(), cache: 'no-store' });
+      if (!r.ok) throw await fallo(r);
+      const j = await r.json();
+      if (j.permissions && j.permissions.push === false) throw new Error('El token no tiene permiso de escritura (Contents: Read and write).');
+    }
+    const espera = () => new Promise(ok => setTimeout(ok, 400 + Math.random() * 700));
+
+    // Lee la versión más reciente de un archivo, aplica el cambio y guarda; si otra persona guardó al mismo tiempo, reintenta.
+    async function mutarArchivo(ruta, abrir, cerrar, fn) {
+      for (let i = 0; i < 6; i++) {
+        const r = await leer(ruta);
+        const d = await abrir(r);
+        const res = await fn(d);
+        if (res === false) return { d, res };
+        try { await escribir(ruta, await cerrar(d), r && r.sha); return { d, res }; }
+        catch (e) { if (e.conflicto) { await espera(); continue; } throw e; }
+      }
+      throw new Error('Varias personas guardaron al mismo tiempo. Intente de nuevo.');
+    }
+    const vacio = () => ({ v: 1, seq: 0, reqs: [], proyectos: [], proveedores: [], notifs: [] });
+    async function mutarDatos(fn) {
+      const { d, res } = await mutarArchivo(R_DATA, async r => r ? descifrarJSON(maestra, r.bytes) : vacio(), d => cifrarJSON(maestra, d), fn);
+      cache = d; etag = null; return res;
+    }
+    async function mutarConf(fn) {
+      const { d } = await mutarArchivo(R_CONF, async r => descifrarJSON(maestra, r.bytes), d => cifrarJSON(maestra, d), fn);
+      conf = d; confEtag = null;
+    }
+    const mutarUsuarios = fn => mutarArchivo(R_USU, async r => r ? JSON.parse(dec.decode(r.bytes)) : { v: 1, usuarios: {} },
+      async d => enc.encode(JSON.stringify(d, null, 1)), fn);
+
+    async function datos(fresco) {
+      const r = await leer(R_DATA, fresco ? null : { etag });
+      if (r && r.sinCambios && cache) return cache;
+      cache = r && !r.sinCambios ? await descifrarJSON(maestra, r.bytes) : vacio();
+      etag = r && !r.sinCambios ? r.etag : null;
+      return cache;
+    }
+    async function refrescarConf() {
+      const r = await leer(R_CONF, { etag: confEtag });
+      if (r && !r.sinCambios) { conf = await descifrarJSON(maestra, r.bytes); confEtag = r.etag; gh.token = conf.token; }
+      const yo = conf.perfiles[uid];
+      if (!yo || yo.activo === false) { this_logout(); throw new Error('Su acceso fue retirado. Hable con el administrador.'); }
+    }
+    const perfilPub = (id, p) => ({ id, nombre: p.nombre, email: p.usuario, roles: p.roles || [], activo: p.activo !== false });
+    const perfiles = () => Object.entries(conf.perfiles || {}).map(([id, p]) => perfilPub(id, p)).sort((a, b) => String(a.nombre).localeCompare(b.nombre));
+    function guardarSesion(recordar) {
+      const s = JSON.stringify({ owner: gh.owner, repo: gh.repo, branch: gh.branch, uid, raw: b64(rawM) });
+      try { sessionStorage.setItem(SES, s); } catch (e) { }
+      try { if (recordar) localStorage.setItem(SES, s); else localStorage.removeItem(SES); } catch (e) { }
+    }
+    function this_logout() {
+      try { sessionStorage.removeItem(SES); } catch (e) { }
+      try { localStorage.removeItem(SES); } catch (e) { }
+      maestra = rawM = uid = conf = cache = etag = confEtag = null; gh.token = '';
+    }
+    async function abrirSesion(raw, id) {
+      rawM = raw; maestra = await importar(raw);
+      const cf = await leerPublico(R_CONF);
+      if (!cf) throw new Error('La aplicación no está activada.');
+      conf = await descifrarJSON(maestra, cf.bytes);
+      const yo = conf.perfiles && conf.perfiles[id];
+      if (!yo || yo.activo === false) throw new Error('Su acceso fue retirado. Hable con el administrador.');
+      uid = id; gh.token = conf.token;
+      return perfilPub(id, yo);
+    }
+    const MIME = { pdf: 'application/pdf', jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', webp: 'image/webp', gif: 'image/gif', heic: 'image/heic' };
+
+    const api = {
+      mode: 'github',
+      needsSetup: false,
+      repoInfo: () => ({ owner: gh.owner, repo: gh.repo }),
+      async init() {
+        if (!(window.crypto && crypto.subtle)) throw new Error('Este navegador no permite el cifrado necesario. Abra la página desde la dirección https:// publicada.');
+        const ub = desdeUbicacion();
+        if (ub) Object.assign(gh, ub);
+        let s = null;
+        try { s = JSON.parse(sessionStorage.getItem(SES) || localStorage.getItem(SES) || 'null'); } catch (e) { }
+        if (s && s.raw) {
+          Object.assign(gh, { owner: s.owner, repo: s.repo, branch: s.branch || gh.branch });
+          try { return await abrirSesion(unb64(s.raw), s.uid); }
+          catch (e) { if (e.name === 'OperationError' || /retirado/.test(e.message)) this_logout(); }
+        }
+        if (!gh.owner) throw new Error('No se pudo identificar el repositorio. Configure GITHUB_OWNER y GITHUB_REPO en js/config.js.');
+        try { api.needsSetup = !(await leerPublico(R_USU)); } catch (e) { api.needsSetup = false; }
+        return null;
+      },
+      async login(usuario, clave, recordar) {
+        const uf = await leerPublico(R_USU);
+        if (!uf) { api.needsSetup = true; throw new Error('La aplicación aún no está activada.'); }
+        const e = (JSON.parse(dec.decode(uf.bytes)).usuarios || {})[await idUsuario(usuario)];
+        let raw = null;
+        if (e) { try { raw = await desenvolver(e, clave); } catch (x) { raw = null; } }
+        if (!raw) throw new Error('Usuario o contraseña incorrectos');
+        const yo = await abrirSesion(raw, await idUsuario(usuario));
+        guardarSesion(recordar);
+        return yo;
+      },
+      async setup({ token, nombre, usuario, clave }) {
+        gh.token = token;
+        await verificar();
+        if (await leer(R_USU)) throw new Error('Esta aplicación ya fue activada en este repositorio. Use la pantalla de ingreso.');
+        const raw = aleatorio(32), llave = await importar(raw), id = await idUsuario(usuario);
+        const c = { v: 1, owner: gh.owner, repo: gh.repo, branch: gh.branch, token, perfiles: { [id]: { usuario, nombre, roles: ['admin', 'tesoreria'], activo: true } } };
+        await escribir(R_CONF, await cifrarJSON(llave, c), null);
+        await escribir(R_DATA, await cifrarJSON(llave, vacio()), null);
+        await escribir(R_USU, enc.encode(JSON.stringify({ v: 1, usuarios: { [id]: await envolver(raw, clave) } }, null, 1)), null);
+        api.needsSetup = false;
+        const yo = await abrirSesion(raw, id);
+        guardarSesion(false);
+        return yo;
+      },
+      async logout() { this_logout(); },
+      async changePassword(p) { await mutarUsuarios(async d => { d.usuarios[uid] = await envolver(rawM, p); }); },
+      async loadAll() {
+        await refrescarConf();
+        const d = await datos();
+        return { reqs: clone(d.reqs).sort((a, b) => b.numero - a.numero), proyectos: clone(d.proyectos), proveedores: clone(d.proveedores), perfiles: perfiles() };
+      },
+      async getReq(id) { const d = await datos(true); const r = d.reqs.find(x => x.id === id); return r ? clone(r) : null; },
+      async createReq(req) {
+        const r = clone(req);
+        await mutarDatos(d => { d.seq = (d.seq || 0) + 1; r.numero = d.seq; r._v = 1; d.reqs = d.reqs.filter(x => x.id !== r.id); d.reqs.push(clone(r)); });
+        return r;
+      },
+      async saveReq(req) {
+        const r = clone(req); r._v = req._v + 1;
+        await mutarDatos(d => {
+          const i = d.reqs.findIndex(x => x.id === req.id);
+          if (i < 0) throw new Error('La solicitud no existe');
+          if (d.reqs[i]._v !== req._v) throw new Error('CONFLICT');
+          d.reqs[i] = clone(r);
+        });
+        return r;
+      },
+      async upsert(table, obj) {
+        const o = clone(obj); if (!o.id) o.id = newId();
+        if (table === 'perfiles') {
+          const { password, ...resto } = o;
+          if (password) await mutarUsuarios(async d => { d.usuarios[o.id] = await envolver(rawM, password); });
+          if (resto.activo === false) await mutarUsuarios(d => { if (!d.usuarios[o.id]) return false; delete d.usuarios[o.id]; });
+          await mutarConf(c => {
+            const p = c.perfiles[o.id]; if (!p) throw new Error('Usuario no encontrado');
+            if (resto.nombre != null) p.nombre = resto.nombre;
+            if (resto.roles) p.roles = resto.roles;
+            if (resto.activo != null) p.activo = resto.activo;
+          });
+          return perfilPub(o.id, conf.perfiles[o.id]);
+        }
+        await mutarDatos(d => {
+          const arr = d[table] = d[table] || [];
+          const i = arr.findIndex(x => x.id === o.id);
+          if (i >= 0) arr[i] = { ...arr[i], ...o }; else arr.push(o);
+        });
+        return o;
+      },
+      async createUser({ nombre, email, password, roles }) {
+        const usuario = String(email).trim(), id = await idUsuario(usuario);
+        if (conf.perfiles[id] && conf.perfiles[id].activo !== false) throw new Error('Ya existe un usuario con ese nombre de usuario');
+        await mutarUsuarios(async d => { d.usuarios[id] = await envolver(rawM, password); });
+        await mutarConf(c => { c.perfiles[id] = { usuario, nombre, roles, activo: true }; });
+        return perfilPub(id, conf.perfiles[id]);
+      },
+      async updateToken(token) {
+        const ant = gh.token; gh.token = token;
+        try { await verificar(); } catch (e) { gh.token = ant; throw e; }
+        await mutarConf(c => { c.token = token; });
+      },
+      async uploadFile(file) {
+        if (file.size > 20e6) throw new Error('El archivo debe pesar menos de 20 MB');
+        const ext = ((file.name.match(/\.(\w{2,5})$/) || [])[1] || 'bin').toLowerCase();
+        const nombre = newId() + '.' + ext;
+        await escribir(rArch(nombre), await cifrar(maestra, new Uint8Array(await file.arrayBuffer())), null);
+        return { nombre: file.name, path: nombre };
+      },
+      async fileUrl(path) {
+        const r = await leer(rArch(path)); if (!r) return null;
+        const ext = (path.split('.').pop() || '').toLowerCase();
+        return URL.createObjectURL(new Blob([await descifrar(maestra, r.bytes)], { type: MIME[ext] || 'application/octet-stream' }));
+      },
+      async notify(list) {
+        const t = new Date().toISOString();
+        await mutarDatos(d => { d.notifs = (d.notifs || []).concat(list.map(n => ({ id: newId(), leida: false, creado: t, ...n }))).slice(-1500); });
+      },
+      async myNotifs() {
+        if (!uid) return [];
+        const d = await datos();
+        return clone((d.notifs || []).filter(n => n.user_id === uid).sort((a, b) => b.creado.localeCompare(a.creado)).slice(0, 50));
+      },
+      async markRead(ids) {
+        if (!ids.length) return;
+        await mutarDatos(d => { let n = 0; (d.notifs || []).forEach(x => { if (ids.includes(x.id) && !x.leida) { x.leida = true; n++; } }); if (!n) return false; });
+      },
+      reset() { }
+    };
+    return api;
+  }
+
+  window.createStore = () => {
+    const modo = cfg.MODO || 'auto';
+    if (modo === 'supabase' || (modo === 'auto' && cfg.SUPABASE_URL && cfg.SUPABASE_ANON_KEY)) return SupaStore();
+    if (modo === 'github' || (modo === 'auto' && location.hostname.toLowerCase().endsWith('.github.io'))) return GitHubStore();
+    return LocalStore();
+  };
 })();

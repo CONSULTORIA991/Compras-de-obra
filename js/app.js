@@ -7,6 +7,9 @@
   let store;
   try { store = window.createStore(); } catch (e) { document.getElementById('app').innerHTML = `<div class="login"><div class="card">${e.message}</div></div>`; return; }
   const DEMO = store.mode === 'demo';
+  const GHM = store.mode === 'github';
+  const MIN_CLAVE = GHM ? 10 : 8;
+  const LBL_USUARIO = GHM ? 'Usuario' : 'Correo';
 
   const S = {
     user: null, reqs: [], proyectos: [], proveedores: [], perfiles: [], notifs: [],
@@ -230,17 +233,44 @@
 
   function paintLogin() {
     const demoUsers = [['obra@demo.co', 'Trabajador de obra'], ['jefe@demo.co', 'Jefe (aprueba)'], ['compras@demo.co', 'Compras'], ['tesoreria@demo.co', 'Tesorería (paga)'], ['admin@demo.co', 'Administrador']];
+    if (store.needsSetup) return paintSetup();
     $('#app').innerHTML = `<div class="login"><div class="card login-card">
       <div class="logo">📦</div><h1>Compras de obra</h1><p class="muted">${esc(EMP.nombre)} · Solicitudes, aprobaciones, cotizaciones y pagos</p>
+      ${GHM ? '<p class="lock">🔒 Acceso protegido · datos cifrados</p>' : ''}
       <form id="fLogin" onsubmit="App.login(event)">
-        <label>Correo<input name="email" type="email" required autocomplete="username"></label>
+        <label>${LBL_USUARIO}<input name="email" type="${GHM ? 'text' : 'email'}" required autocomplete="username" autocapitalize="none"></label>
         <label>Contraseña<input name="pass" type="password" required autocomplete="current-password"></label>
+        ${GHM ? '<label class="check mb"><input type="checkbox" name="recordar"> Mantener la sesión en este dispositivo</label>' : ''}
         <button class="btn primary block">Ingresar</button>
         <p id="loginErr" class="err"></p>
       </form>
       ${DEMO ? `<div class="demo-users"><p class="muted sm">Modo demostración: entre como cualquier rol (contraseña <b>demo123</b>):</p>
         <div class="chips">${demoUsers.map(([e, l]) => `<button class="chip-btn" onclick="App.demoFill('${e}')">${l}</button>`).join('')}</div></div>` : ''}
     </div></div>`;
+  }
+
+  function paintSetup() {
+    const ri = store.repoInfo ? store.repoInfo() : {};
+    $('#app').innerHTML = `<div class="login"><div class="card login-card wide">
+      <p class="lock">🔒 Configuración inicial</p><h1>Activar la aplicación</h1>
+      <p class="muted">Se hace una sola vez. Se crea la llave de cifrado y su cuenta de administrador. Todos los datos se guardan cifrados en el repositorio <b>${esc(ri.owner)}/${esc(ri.repo)}</b>.</p>
+      <ol class="steps">
+        <li>En GitHub, cree un <b>token de acceso fino</b>: foto de perfil → <b>Settings → Developer settings → Personal access tokens → Fine-grained tokens → Generate new token</b>.</li>
+        <li>En <b>Repository access</b> elija <b>Only select repositories</b> → <b>${esc(ri.repo)}</b>. En <b>Permissions → Contents</b> elija <b>Read and write</b>. Póngale la fecha de vencimiento más larga que permita.</li>
+        <li>Péguelo abajo. Quedará guardado cifrado; nadie lo ve sin contraseña.</li>
+      </ol>
+      <form id="fSetup" onsubmit="App.activar(event)">
+        <label>Token de GitHub<input name="token" type="password" autocomplete="off" required></label>
+        <label>Su nombre<input name="nombre" autocomplete="name" required></label>
+        <div class="grid2">
+          <label>Usuario para entrar<input name="usuario" autocomplete="username" autocapitalize="none" required></label>
+          <label>Contraseña (mín. ${MIN_CLAVE} caracteres)<input name="clave" type="password" autocomplete="new-password" required></label>
+        </div>
+        <label>Repita la contraseña<input name="clave2" type="password" autocomplete="new-password" required></label>
+        <p class="muted sm">Su usuario quedará como Administrador y Tesorería. Después podrá crear los usuarios de cada persona desde Admin.</p>
+        <button class="btn primary block">Activar y entrar</button>
+        <p id="setupErr" class="err"></p>
+      </form></div></div>`;
   }
 
   /* ------------------------------------------------------------ INICIO */
@@ -738,7 +768,9 @@ Enviar la cotización respondiendo a este mensaje o al correo ${esc(EMP.email ||
     if (S.admTab === 'datos') body = `<p>Descargue una copia de seguridad de toda la información (solicitudes, cotizaciones, pagos, proveedores y proyectos).</p>
       <div class="row gap wrap"><button class="btn" onclick="App.backup()">⬇️ Descargar copia (JSON)</button><button class="btn" onclick="App.exportItems()">⬇️ Detalle de ítems (Excel)</button>
       ${DEMO ? `<button class="btn danger-ghost" onclick="App.resetDemo()">Reiniciar datos de demostración</button>` : ''}</div>
-      <p class="muted sm">Modo actual: <b>${DEMO ? 'Demostración (datos en este navegador)' : 'Supabase (base de datos en la nube)'}</b></p>`;
+      <p class="muted sm">Modo actual: <b>${DEMO ? 'Demostración (datos en este navegador)' : GHM ? 'Datos cifrados en el repositorio de GitHub' : 'Supabase (base de datos en la nube)'}</b></p>
+      ${GHM ? `<h2>Token de GitHub</h2><p class="muted">Cuando el token venza, la app dejará de guardar cambios. Cree uno nuevo (mismos permisos: solo este repositorio, Contents: Read and write) y péguelo aquí.</p>
+      <form class="row gap wrap" onsubmit="App.guardarToken(event)"><input name="token" type="password" autocomplete="off" placeholder="Token nuevo" style="max-width:360px"><button class="btn">Actualizar token</button></form>` : ''}`;
     return `<section class="card"><h1>Administración</h1>
       <div class="tabs">${tabs.map(([k, l]) => `<button class="${S.admTab === k ? 'on' : ''}" onclick="App.admTab('${k}')">${l}</button>`).join('')}</div>${body}</section>`;
   }
@@ -750,9 +782,26 @@ Enviar la cotización respondiendo a este mensaje o al correo ${esc(EMP.email ||
   App.demoFill = e => { const f = $('#fLogin'); f.email.value = e; f.pass.value = 'demo123'; f.requestSubmit ? f.requestSubmit() : f.dispatchEvent(new Event('submit')); };
   App.login = async ev => {
     ev.preventDefault(); const f = new FormData(ev.target); const err = $('#loginErr'); err.textContent = '';
-    try { busy(true); S.user = await store.login(f.get('email'), f.get('pass')); busy(false); if (!location.hash || location.hash === '#/') location.hash = '#/inicio'; await route(); }
-    catch (e) { err.textContent = e.message; } finally { busyN = 0; busy(false); }
+    try { busy(true); S.user = await store.login(f.get('email'), f.get('pass'), !!f.get('recordar')); busy(false); if (!location.hash || location.hash === '#/') location.hash = '#/inicio'; await route(); }
+    catch (e) { err.textContent = e.message; if (store.needsSetup) paintSetup(); } finally { busyN = 0; busy(false); }
   };
+  App.activar = async ev => {
+    ev.preventDefault(); const f = new FormData(ev.target); const err = $('#setupErr'); err.textContent = '';
+    const clave = f.get('clave');
+    if (clave.length < MIN_CLAVE) return err.textContent = `La contraseña debe tener al menos ${MIN_CLAVE} caracteres.`;
+    if (clave !== f.get('clave2')) return err.textContent = 'Las contraseñas no coinciden.';
+    try {
+      busy(true);
+      S.user = await store.setup({ token: f.get('token').trim(), nombre: f.get('nombre').trim(), usuario: f.get('usuario').trim(), clave });
+      busy(false); toast('Aplicación activada. Cree los proyectos, proveedores y usuarios en Admin.');
+      location.hash = '#/admin'; await route();
+    } catch (e) { err.textContent = e.message; } finally { busyN = 0; busy(false); }
+  };
+  App.guardarToken = run(async ev => {
+    ev.preventDefault(); const t = String(new FormData(ev.target).get('token') || '').trim();
+    if (!t) throw new Error('Pegue el token nuevo');
+    await store.updateToken(t); ev.target.reset(); toast('Token actualizado');
+  });
   App.logout = run(async () => { await store.logout(); S.user = null; location.hash = ''; paintLogin(); });
   App.resetDemo = () => { if (confirm('¿Borrar todos los datos de este navegador y volver a los datos de prueba?')) { store.reset(); store.logout(); location.hash = ''; location.reload(); } };
   App.toggleUser = () => { const m = $('#userMenu'); m.hidden = !m.hidden; $('#notifPanel').hidden = true; };
@@ -773,9 +822,9 @@ Enviar la cotización respondiendo a este mensaje o al correo ${esc(EMP.email ||
   App.cambiarClave = () => {
     $('#userMenu').hidden = true;
     modal('Cambiar contraseña', `<form onsubmit="App.guardarClave(event)">
-      <label>Nueva contraseña<input type="password" name="p1" minlength="8" required autocomplete="new-password"></label>
-      <label>Repetir contraseña<input type="password" name="p2" minlength="8" required autocomplete="new-password"></label>
-      <p class="muted sm">Mínimo 8 caracteres.</p><div class="actions"><button class="btn primary">Guardar</button></div></form>`);
+      <label>Nueva contraseña<input type="password" name="p1" minlength="${MIN_CLAVE}" required autocomplete="new-password"></label>
+      <label>Repetir contraseña<input type="password" name="p2" minlength="${MIN_CLAVE}" required autocomplete="new-password"></label>
+      <p class="muted sm">Mínimo ${MIN_CLAVE} caracteres.</p><div class="actions"><button class="btn primary">Guardar</button></div></form>`);
   };
   App.guardarClave = run(async ev => {
     ev.preventDefault(); const f = new FormData(ev.target);
@@ -1053,8 +1102,9 @@ Enviar la cotización respondiendo a este mensaje o al correo ${esc(EMP.email ||
     const u = id ? S.perfiles.find(p => p.id === id) : { roles: ['solicitante'], activo: true };
     modal(id ? 'Editar usuario' : 'Nuevo usuario', `<form onsubmit="App.guardarUsuario(event,'${id || ''}')">
       <label>Nombre completo<input name="nombre" required value="${esc(u.nombre || '')}"></label>
-      <label>Correo (usuario para ingresar)<input name="email" type="email" required value="${esc(u.email || '')}" ${id ? 'disabled' : ''}></label>
-      ${id ? '' : `<label>Contraseña inicial<input name="password" type="text" minlength="8" required autocomplete="off"><small class="muted">Mínimo 8 caracteres. La persona podrá cambiarla al entrar.</small></label>`}
+      <label>${GHM ? 'Usuario para ingresar' : 'Correo (usuario para ingresar)'}<input name="email" type="${GHM ? 'text' : 'email'}" autocapitalize="none" required value="${esc(u.email || '')}" ${id ? 'disabled' : ''}></label>
+      ${id ? (GHM ? `<label>Nueva contraseña (opcional)<input name="password" type="text" minlength="${MIN_CLAVE}" autocomplete="off"><small class="muted">Úsela si la persona olvidó su contraseña o para reactivar un usuario inactivo.</small></label>` : '')
+           : `<label>Contraseña inicial<input name="password" type="text" minlength="${MIN_CLAVE}" required autocomplete="off"><small class="muted">Mínimo ${MIN_CLAVE} caracteres. Entréguela por un medio distinto al enlace; la persona podrá cambiarla al entrar.</small></label>`}
       <h3>Roles</h3><div class="checks">${Object.entries(ROLES).map(([k, l]) => `<label class="check"><input type="checkbox" name="roles" value="${k}" ${(u.roles || []).includes(k) ? 'checked' : ''}> ${l}</label>`).join('')}</div>
       ${id ? `<label class="check"><input type="checkbox" name="activo" ${u.activo !== false ? 'checked' : ''}> Usuario activo (puede ingresar)</label>` : ''}
       <div class="actions"><button class="btn primary">Guardar</button></div></form>`);
@@ -1064,7 +1114,11 @@ Enviar la cotización respondiendo a este mensaje o al correo ${esc(EMP.email ||
     if (!roles.length) throw new Error('Asigne al menos un rol');
     if (id) {
       if (id === S.user.id && !roles.includes('admin')) throw new Error('No puede quitarse a sí mismo el rol de administrador');
-      await store.upsert('perfiles', { id, nombre: f.get('nombre').trim(), roles, activo: !!f.get('activo') });
+      const pw = String(f.get('password') || '');
+      if (pw && pw.length < MIN_CLAVE) throw new Error(`La contraseña debe tener al menos ${MIN_CLAVE} caracteres`);
+      const antes = S.perfiles.find(p => p.id === id);
+      if (GHM && antes && antes.activo === false && f.get('activo') && !pw) throw new Error('Para reactivar el usuario, asígnele una contraseña nueva');
+      await store.upsert('perfiles', { id, nombre: f.get('nombre').trim(), roles, activo: !!f.get('activo'), ...(pw ? { password: pw } : {}) });
     } else await store.createUser({ nombre: f.get('nombre').trim(), email: f.get('email').trim(), password: f.get('password'), roles });
     cerrarModal(); toast('Usuario guardado'); await route();
   });
@@ -1137,7 +1191,8 @@ Enviar la cotización respondiendo a este mensaje o al correo ${esc(EMP.email ||
   }, 30000);
 
   (async () => {
-    try { S.user = await store.init(); } catch (e) { S.user = null; }
+    try { S.user = await store.init(); }
+    catch (e) { S.user = null; $('#app').innerHTML = `<div class="login"><div class="card login-card"><div class="logo">📦</div><p>${esc(e.message)}</p></div></div>`; return; }
     await route();
   })();
 })();

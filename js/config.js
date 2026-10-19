@@ -1,15 +1,19 @@
 /*
  * CONFIGURACIÓN DE LA APLICACIÓN
  * ------------------------------------------------------------
- * Si SUPABASE_URL y SUPABASE_ANON_KEY están vacíos, la app funciona en
- * MODO DEMOSTRACIÓN (datos guardados solo en el navegador, usuarios de prueba).
- *
- * Para producción: cree un proyecto en https://supabase.com, ejecute
- * supabase/schema.sql y pegue aquí la URL y la "anon public key"
- * (Project Settings → API). La anon key es pública por diseño: la seguridad
- * la dan el login y las políticas RLS de la base de datos.
+ * MODO 'auto' (recomendado):
+ *  - Publicada en GitHub Pages (*.github.io): datos CIFRADOS en este mismo repositorio,
+ *    con usuario y contraseña para cada persona (igual que la app de PAGOS).
+ *  - Abierta en el computador (localhost): MODO DEMOSTRACIÓN con usuarios de prueba.
+ *  - Si se llenan SUPABASE_URL y SUPABASE_ANON_KEY: usa Supabase (opcional).
  */
 window.APP_CONFIG = {
+  MODO: 'auto',            // 'auto' | 'github' | 'demo' | 'supabase'
+  GITHUB_OWNER: '',        // vacío = se deduce de la dirección <usuario>.github.io/<repo>
+  GITHUB_REPO: '',
+  GITHUB_RAMA: 'main',
+
+
   SUPABASE_URL: '',
   SUPABASE_ANON_KEY: '',
 

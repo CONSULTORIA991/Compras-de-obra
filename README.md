@@ -44,9 +44,41 @@ Para abrirla en su computador, desde esta carpeta:
 npx --yes serve .
 ```
 
-(o cualquier servidor estático). También funciona al publicarla en GitHub Pages.
+(o cualquier servidor estático). La versión publicada en GitHub Pages no usa el modo demostración: pide activación y usuarios reales (ver punto 2).
 
-## 2. Pasar a producción (datos reales, usuario y contraseña)
+## 2. Uso real: datos cifrados en este repositorio (igual que la app de PAGOS)
+
+Publicada en GitHub Pages, la app guarda todo **cifrado dentro de este mismo repositorio**,
+en la carpeta `datos/`. Cada persona entra con su propio usuario y contraseña:
+
+| Archivo | Contenido |
+|---|---|
+| `datos/usuarios.json` | La llave maestra, envuelta con la contraseña de cada usuario. Los nombres de usuario van como huella (hash), no en texto. |
+| `datos/config.enc` | Token de GitHub, usuarios y roles (cifrado) |
+| `datos/compras.enc` | Solicitudes, cotizaciones, pagos, proyectos, proveedores y notificaciones (cifrado) |
+| `datos/archivos/*` | Cotizaciones de proveedores y soportes de pago (cifrados) |
+
+Cifrado AES-256-GCM. Las contraseñas se procesan con PBKDF2-SHA256 de 600.000 iteraciones.
+Aunque el repositorio sea público, sin una contraseña válida no se puede leer nada.
+
+**Activación (una sola vez):**
+1. Abra la página publicada. Aparece **Activar la aplicación**.
+2. En GitHub cree un **token de acceso fino**: foto de perfil → Settings → Developer settings →
+   Personal access tokens → **Fine-grained tokens** → Generate new token.
+   * Repository access: **Only select repositories** → este repositorio.
+   * Permissions → **Contents: Read and write**.
+3. Pegue el token, escriba su nombre, usuario y contraseña, y haga clic en **Activar y entrar**.
+   Su usuario queda como Administrador y Tesorería.
+4. En **Admin**, cree los proyectos, los proveedores y un usuario para cada persona.
+   Entregue cada contraseña por un medio distinto al enlace.
+
+**Cuando el token venza**, la app deja de guardar cambios. Cree uno nuevo con los mismos permisos y
+péguelo en **Admin → Datos → Token de GitHub**.
+
+**Si alguien olvida su contraseña**, el administrador le asigna una nueva en Admin → Usuarios.
+Si una persona sale de la empresa, marque su usuario como **inactivo**.
+
+## 3. Opcional: Supabase en lugar del repositorio
 
 La seguridad la da **Supabase** (plan gratuito): login con contraseña cifrada (bcrypt),
 conexión HTTPS y reglas de acceso en la base de datos (Row Level Security). Sin sesión iniciada
@@ -71,7 +103,7 @@ no se puede leer ningún dato.
 8. Entre a la app con su usuario. En **Admin**, cree proyectos, proveedores y los usuarios de
    cada persona con sus roles.
 
-## 3. Subir a GitHub y publicar
+## 4. Subir a GitHub y publicar
 
 ```bash
 git init
@@ -98,7 +130,7 @@ para usarla como una app.
 index.html          Página principal
 css/styles.css      Estilos (pensados primero para celular)
 js/config.js        Configuración: Supabase y datos de la empresa
-js/store.js         Capa de datos (modo demo / Supabase)
+js/store.js         Capa de datos (demo / cifrado en GitHub / Supabase)
 js/app.js           Pantallas y reglas del flujo
 js/seed.js          Datos de prueba del modo demostración
 supabase/schema.sql Tablas, seguridad y almacenamiento de archivos
@@ -106,9 +138,13 @@ supabase/schema.sql Tablas, seguridad y almacenamiento de archivos
 
 ## Limitaciones de este prototipo (para la versión 2)
 
-* Los permisos por rol se aplican en la interfaz. En la base de datos, cualquier usuario
-  **activo** puede modificar solicitudes. Para un control estricto, las acciones (aprobar,
-  pagar…) deben pasar a funciones del servidor (RPC) que validen el rol.
+* Los permisos por rol se aplican en la interfaz. Todos los usuarios comparten la misma llave
+  de cifrado, así que técnicamente cualquier usuario activo podría modificar datos fuera de la
+  app. Es el mismo modelo de la app de PAGOS.
+* Al desactivar a alguien, deja de poder entrar con su contraseña. Para cortar del todo un
+  acceso comprometido, cambie también el token de GitHub.
+* Cada cambio queda como un commit "Actualización" en el repositorio. Eso también sirve como
+  historial y respaldo.
 * Las notificaciones son dentro de la app y se revisan cada 30 segundos. El correo o WhatsApp
   automáticos se pueden agregar después.
 * No hay etapa de "recibido en obra" ni pagos parciales (abonos). Ambas son fáciles de agregar.

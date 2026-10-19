@@ -80,6 +80,9 @@ main { max-width: 1120px; margin: 0 auto; padding: 1.2rem 1.2rem 5rem; }
 .login-card { width: min(420px, 100%); text-align: center; }
 .login-card form { text-align: left; margin-top: 1rem; }
 .logo { font-size: 3rem; }
+.login-card.wide { width: min(620px, 100%); text-align: left; }
+.lock { display: inline-block; background: var(--green-s); color: var(--green); font-weight: 700; font-size: .8rem; padding: .25rem .7rem; border-radius: 99px; margin: .2rem 0 .4rem; }
+.steps { padding-left: 1.2rem; font-size: .9rem; color: #3b4558; } .steps li { margin-bottom: .4rem; }
 .demo-users { margin-top: 1rem; border-top: 1px solid var(--line); padding-top: .8rem; }
 .chip-btn { border: 1px solid var(--line); background: var(--soft); border-radius: 99px; padding: .4rem .8rem; cursor: pointer; font: inherit; font-size: .85rem; }
 .chip-btn:hover { border-color: var(--pri); color: var(--pri); }

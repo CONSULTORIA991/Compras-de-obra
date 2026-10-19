@@ -20,6 +20,11 @@
    "salt": "jVINDr57GCzcNm/mvo4C7A==",
    "iter": 600000,
    "llave": "cVZHS/TrjYLa8k/D4HXz6DTW4v4j1F3190ITjWdXniBWSULPS2eW34iDaYvGgF6A5Hx5fsJkaSSTPb16"
+  },
+  "b996cc3b847494847371e851e7325d9f5b5105d197cb59fc1893ec6a7b83336c": {
+   "salt": "/mbzJQJ9NJWh65x+Bp5GFg==",
+   "iter": 600000,
+   "llave": "7WVUuDvoXKc81tdg57cNWGMKdAIIeNCxSzIFRoF8iozXBWSA7MVZSshAvwgBhza8I4VPqKiTX06hISNK"
   }
  }
 }

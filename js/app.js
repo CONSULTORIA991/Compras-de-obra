@@ -111,6 +111,17 @@
     const c = r.cotizaciones.find(c => ['aprobada', 'pagada'].includes(c.estado) && c.itemIds.includes(i.id));
     return c ? { c, precio: num(c.precios[i.id]), cant: cantC(c, i), producto: prodC(c, i) } : null;
   };
+  // Cotizaciones "esperando proveedor" repetidas: mismo proveedor e ítems ya cubiertos por otra abierta anterior.
+  function repetidas(r) {
+    const out = [];
+    r.cotizaciones.forEach((c, k) => {
+      if (c.estado !== 'solicitada') return;
+      const antes = r.cotizaciones.slice(0, k).filter(x => x.proveedorId === c.proveedorId && ['solicitada', 'recibida', 'aprobada', 'pagada'].includes(x.estado) && !out.includes(x));
+      const cubiertos = new Set(antes.flatMap(x => x.itemIds));
+      if (antes.length && c.itemIds.every(i => cubiertos.has(i))) out.push(c);
+    });
+    return out;
+  }
   const allCots = () => S.reqs.flatMap(r => (r.cotizaciones || []).map(c => ({ r, c })));
   const log = (r, accion, detalle) => r.eventos.push({ t: now(), uid: S.user.id, por: S.user.nombre, accion, detalle: detalle || '' });
 
@@ -137,10 +148,74 @@
         const saved = await store.saveReq(r);
         const k = S.reqs.findIndex(x => x.id === saved.id);
         if (k >= 0) S.reqs[k] = saved; else S.reqs.unshift(saved);
+        if (saved.cedula) publicarEstado(saved.cedula);
         return { r: saved, cerro: info.cerrada && !antes };
       } catch (e) { if (e.message !== 'CONFLICT') throw e; }
     }
     throw new Error('Otra persona modificó esta solicitud al mismo tiempo. Recargue e intente de nuevo.');
+  }
+
+  /* ------------------------------------------------------------ enlace público de solicitudes */
+  // Estado de las solicitudes de una persona, publicado cifrado con su cédula para que lo consulte desde el enlace.
+  const publicando = {};
+  function publicarEstado(cedula) {
+    if (!cedula || !store.publicarEstado || !window.Sobre) return;
+    clearTimeout(publicando[cedula]);
+    publicando[cedula] = setTimeout(async () => {
+      try {
+        const rs = S.reqs.filter(r => r.cedula === cedula).sort((a, b) => String(b.creado).localeCompare(String(a.creado))).slice(0, 40);
+        await store.publicarEstado(cedula, {
+          v: 1, nombre: (rs[0] && rs[0].solicitantes) || '', actualizado: now(),
+          solicitudes: rs.map(r => {
+            const info = reqInfo(r);
+            return { radicado: r.radicado || '', codigo: code(r), fecha: r.creado, proyecto: r.proyecto, estado: REQ_EST[info.estado].l, cerrada: info.cerrada,
+              items: r.items.map(i => ({ d: i.descripcion, c: i.cantidad, u: i.unidad, e: ITEM_EST[itemStage(r, i)].l, n: i.nota || '' })) };
+          })
+        });
+      } catch (e) { console.warn('No se pudo publicar el estado', e); }
+    }, 1200);
+  }
+  const publicarCfgSolicitud = () => store.publicarConfigSolicitud && store.buzonInfo && store.buzonInfo()
+    ? store.publicarConfigSolicitud(S.proyectos.filter(p => p.activo !== false).map(p => p.nombre).sort((a, b) => a.localeCompare(b))).catch(e => console.warn(e))
+    : Promise.resolve();
+  // Recoge las solicitudes enviadas desde el enlace (buzón) y las registra. Las revisa cualquier jefe o compras conectado.
+  let revisandoBuzon = false;
+  async function revisarBuzon() {
+    if (revisandoBuzon || !S.user || !store.buzonInfo || !store.buzonInfo() || !(has('jefe') || has('compras'))) return;
+    revisandoBuzon = true;
+    try {
+      const envios = await store.leerBuzon();
+      let n = 0;
+      for (const { ref, datos: x } of envios) {
+        try {
+          if (!x || !x.radicado || !Array.isArray(x.items)) continue;
+          if (!S.reqs.some(r => r.radicado === x.radicado)) {
+            const p = S.proyectos.find(p => p.nombre.trim().toLowerCase() === String(x.proyecto || '').trim().toLowerCase());
+            const t = x.fecha || now(), nombre = String(x.nombre || '').slice(0, 80), ced = String(x.cedula || '').replace(/\D/g, '').slice(0, 15);
+            const items = x.items.filter(i => i && String(i.descripcion || '').trim()).slice(0, 60).map(i => ({
+              id: newId(), descripcion: String(i.descripcion).trim().slice(0, 200), cantidad: num(i.cantidad) > 0 ? num(i.cantidad) : 1,
+              unidad: UNIDADES.includes(i.unidad) ? i.unidad : 'und', estado: 'revision', nota: '', creado: t }));
+            if (items.length) {
+              const req = {
+                id: newId(), proyectoId: p ? p.id : null, proyecto: p ? p.nombre : (String(x.proyecto || '').slice(0, 80) || 'Sin proyecto'),
+                solicitantes: nombre, cedula: ced, celular: String(x.celular || '').slice(0, 20), origen: 'enlace', radicado: String(x.radicado).slice(0, 12),
+                prioridad: x.prioridad === 'urgente' ? 'urgente' : 'normal', fechaRequerida: /^\d{4}-\d{2}-\d{2}$/.test(x.fechaRequerida || '') ? x.fechaRequerida : null,
+                notas: String(x.notas || '').slice(0, 500), creado: t, creadoPor: null, creadoPorNombre: nombre + ' (enlace)', items, cotizaciones: [],
+                eventos: [{ t, uid: null, por: nombre, accion: 'Solicitud enviada desde el enlace', detalle: `Radicado ${x.radicado} · C.C. ${ced} · ${items.length} ítem(s)` }]
+              };
+              const saved = await store.createReq(req);
+              if (!S.reqs.some(r => r.id === saved.id)) S.reqs.unshift(saved);
+              await notificar(['jefe'], `Nueva solicitud ${code(saved)} de ${nombre} (${saved.proyecto}) desde el enlace: ${items.length} ítem(s) por revisar${req.prioridad === 'urgente' ? ' · URGENTE' : ''}`, saved.id);
+              publicarEstado(ced);
+              n++;
+            }
+          }
+          await store.cerrarEnvio(ref, x.radicado);
+        } catch (e) { console.warn('Envío no procesado', e); }
+      }
+      if (n) { toast(`Llegaron ${n} solicitud(es) nueva(s) desde el enlace`); if (!$('#modal').innerHTML) paint(); }
+    } catch (e) { console.warn('Buzón', e); if (e.status === 401) toast(e.message, 'err'); }
+    finally { revisandoBuzon = false; }
   }
 
   /* ------------------------------------------------------------ UI básica */
@@ -150,7 +225,7 @@
     setTimeout(() => d.remove(), 3800);
   }
   let busyN = 0;
-  function busy(on) { busyN += on ? 1 : -1; if (busyN < 0) busyN = 0; $('#busy').hidden = busyN === 0; }
+  function busy(on) { busyN += on ? 1 : -1; if (busyN < 0) busyN = 0; $('#busy').hidden = busyN === 0; document.body.classList.toggle('ocupado', busyN > 0); }
   function modal(title, body, wide) {
     $('#modal').innerHTML = `<div class="modal-bg" onclick="if(event.target===this)App.cerrarModal()"><div class="modal${wide ? ' wide' : ''}" role="dialog" aria-modal="true">
       <header><h2>${title}</h2><button class="icon" type="button" onclick="App.cerrarModal()" aria-label="Cerrar">✕</button></header>
@@ -159,10 +234,23 @@
     if (first && window.innerWidth > 700) first.focus();
   }
   const cerrarModal = () => { $('#modal').innerHTML = ''; };
+  // Ejecuta una acción mostrando "Guardando…". Si viene de un formulario, bloquea sus botones
+  // hasta terminar: así un doble clic no crea registros repetidos.
+  const enCurso = new Set();
   const run = fn => async (...a) => {
+    const ev = a[0], form = ev && ev.target && ev.target.tagName === 'FORM' ? ev.target : null;
+    const clave = form || fn;
+    if (enCurso.has(clave)) { if (ev && ev.preventDefault) ev.preventDefault(); return; }
+    enCurso.add(clave);
+    const btns = form ? $$('button', form) : [];
+    const textos = btns.map(b => b.innerHTML);
+    btns.forEach(b => { b.disabled = true; if (b.classList.contains('primary') || b.type === 'submit' || !b.type) b.innerHTML = '⏳ Guardando…'; });
     try { busy(true); await fn(...a); }
     catch (e) { console.error(e); toast(e.message || String(e), 'err'); }
-    finally { busy(false); }
+    finally {
+      busy(false); enCurso.delete(clave);
+      btns.forEach((b, k) => { if (b.isConnected) { b.disabled = false; b.innerHTML = textos[k]; } });
+    }
   };
   async function abrirArchivo(path) {
     const w = window.open('', '_blank');
@@ -401,7 +489,7 @@
       <div class="rc-top"><b>${code(r)}</b>${badge(REQ_EST, info.estado)}${r.prioridad === 'urgente' && !info.cerrada ? '<span class="badge b-red">Urgente</span>' : ''}
         ${info.pendientes && info.estado !== 'espera' ? `<span class="badge b-amber">${info.pendientes} pendiente(s)</span>` : ''}</div>
       <div class="rc-p">${esc(r.proyecto)}</div>
-      <div class="muted sm">${esc(r.solicitantes)} · ${fdate(r.creado)} · ${info.total} ítem(s)</div>
+      <div class="muted sm">${r.origen === 'enlace' ? '🔗 ' : ''}${esc(r.solicitantes)}${r.cedula ? ' · C.C. ' + esc(r.cedula) : ''} · ${fdate(r.creado)} · ${info.total} ítem(s)</div>
       <div class="chips">${Object.entries(info.cnt).map(([k, v]) => `<span class="chip c-${ITEM_EST[k].c}">${v} ${ITEM_EST[k].l.toLowerCase()}</span>`).join('')}</div>
       <div class="prog" title="${pct}% resuelto"><span style="width:${pct}%"></span></div></a>`;
   }
@@ -416,7 +504,7 @@
       if (f.estado === 'con_pendientes' && !(info.pendientes && !info.cerrada)) return false;
       if (REQ_EST[f.estado] && info.estado !== f.estado) return false;
       if (q) {
-        const hay = [code(r), r.proyecto, r.solicitantes, r.creadoPorNombre, ...r.items.map(i => i.descripcion), ...r.cotizaciones.map(c => c.proveedorNombre + ' ' + c.codigo)].join(' ').toLowerCase();
+        const hay = [code(r), r.proyecto, r.solicitantes, r.creadoPorNombre, r.cedula, r.radicado, ...r.items.map(i => i.descripcion), ...r.cotizaciones.map(c => c.proveedorNombre + ' ' + c.codigo)].join(' ').toLowerCase();
         if (!hay.includes(q)) return false;
       }
       return true;
@@ -470,7 +558,10 @@
       </div>
       <dl class="meta">
         <div><dt>Solicitado por</dt><dd>${esc(r.solicitantes)}</dd></div>
-        <div><dt>Registrado por</dt><dd>${esc(r.creadoPorNombre)}</dd></div>
+        ${r.origen === 'enlace' ? `<div><dt>Cédula</dt><dd>${esc(r.cedula || '—')}</dd></div>
+        ${r.celular ? `<div><dt>Celular</dt><dd><a href="https://wa.me/${telWa(r.celular)}" target="_blank" rel="noopener">${esc(r.celular)}</a></dd></div>` : ''}
+        <div><dt>Recibida por</dt><dd>🔗 Enlace · radicado ${esc(r.radicado || '')}</dd></div>`
+        : `<div><dt>Registrado por</dt><dd>${esc(r.creadoPorNombre)}</dd></div>`}
         <div><dt>Fecha</dt><dd>${fdt(r.creado)}</dd></div>
         ${r.fechaRequerida ? `<div><dt>Se necesita para</dt><dd>${fdate(r.fechaRequerida + 'T12:00:00')}</dd></div>` : ''}
         ${r.notas ? `<div class="full"><dt>Observaciones</dt><dd>${esc(r.notas)}</dd></div>` : ''}
@@ -481,7 +572,9 @@
       ${acciones.length ? `<div class="actions left">${acciones.join('')}</div>` : ''}
     </section>
     ${has('jefe') && porDecidir.length ? revisionHtml(r, porDecidir) : ''}
-    ${r.cotizaciones.length ? `<section class="card"><h2>Cotizaciones</h2>${compareHtml(r)}<div class="cots">${cotsVis.map(c => cotCard(r, c)).join('')}</div></section>` : ''}
+    ${r.cotizaciones.length ? `<section class="card"><h2>Cotizaciones</h2>
+      ${has('compras') && repetidas(r).length ? `<div class="alert amber row between wrap">Hay ${repetidas(r).length} cotización(es) repetida(s) del mismo proveedor con los mismos ítems, esperando respuesta. <button class="btn sm" onclick="App.anularRepetidas('${r.id}')">Anular las repetidas</button></div>` : ''}
+      ${compareHtml(r)}<div class="cots">${cotsVis.map(c => cotCard(r, c)).join('')}</div></section>` : ''}
     <section class="card"><h2>Historial</h2><ol class="timeline">${r.eventos.slice().reverse().map(e => `<li><time>${fdt(e.t)}</time><div><b>${esc(e.accion)}</b> · ${esc(e.por)}${e.detalle ? `<div class="muted">${esc(e.detalle)}</div>` : ''}</div></li>`).join('')}</ol></section>`;
   }
   function itemHtml(r, i, k) {
@@ -757,6 +850,20 @@ Enviar la cotización respondiendo a este mensaje o al correo ${esc(EMP.email ||
       </tbody></table></div>` : '<p class="empty">No hay cotizaciones pendientes.</p>'}</section>
     ${grupoTabla('🏪 Compras por proveedor', porProv)}
     ${grupoTabla('🏗️ Compras por proyecto', porProy)}
+    <section class="card"><h2>🙋 Solicitudes por persona</h2>
+      ${(() => {
+        const g = {};
+        for (const r of reqs) {
+          const k = r.cedula || String(r.solicitantes || r.creadoPorNombre || '—').toLowerCase();
+          const x = g[k] = g[k] || { nombre: r.solicitantes || r.creadoPorNombre, cedula: r.cedula || '', n: 0, items: 0, rech: 0, abiertas: 0, ultima: '', proys: new Set(), q: r.cedula || r.solicitantes || '' };
+          x.n++; x.items += r.items.length; x.rech += r.items.filter(i => i.estado === 'rechazado').length; if (!reqInfo(r).cerrada) x.abiertas++;
+          if (String(r.creado) > x.ultima) x.ultima = r.creado; x.proys.add(r.proyecto);
+        }
+        const L = Object.values(g).sort((a, b) => b.n - a.n);
+        return L.length ? `<div class="scroll-x"><table class="tbl hover"><thead><tr><th>Persona</th><th>Cédula</th><th class="r">Solicitudes</th><th class="r">Abiertas</th><th class="r">Ítems</th><th class="r">Rechazados</th><th>Proyectos</th><th>Última</th></tr></thead><tbody>
+          ${L.map(x => `<tr onclick="App.verPersona('${esc(String(x.q).replace(/'/g, ''))}')"><td><b>${esc(x.nombre)}</b></td><td>${esc(x.cedula || '—')}</td><td class="r">${x.n}</td><td class="r">${x.abiertas}</td><td class="r">${x.items}</td><td class="r">${x.rech}</td><td class="sm">${esc([...x.proys].join(', '))}</td><td>${fdate(x.ultima)}</td></tr>`).join('')}
+          </tbody></table></div><p class="muted sm">Haga clic en una persona para ver todas sus solicitudes.</p>` : '<p class="empty">Sin datos.</p>';
+      })()}</section>
     <section class="card"><h2>🧱 Materiales con mayor gasto</h2>
       ${matL.length ? `<div class="scroll-x"><table class="tbl"><thead><tr><th>Material</th><th class="r">Cantidad</th><th class="r">Valor (antes de IVA)</th><th>Proveedores</th></tr></thead><tbody>
       ${matL.map(x => `<tr><td>${esc(x.d)}</td><td class="r">${x.cant} ${esc(x.u)}</td><td class="r">${money(x.valor)}</td><td class="sm">${esc([...x.provs].join(', '))}</td></tr>`).join('')}</tbody></table></div>` : '<p class="empty">Sin datos.</p>'}</section>
@@ -767,7 +874,8 @@ Enviar la cotización respondiendo a este mensaje o al correo ${esc(EMP.email ||
 
   /* ------------------------------------------------------------ ADMIN */
   function viewAdmin() {
-    const tabs = [has('admin') && ['usuarios', '👥 Usuarios'], ['proveedores', '🏪 Proveedores'], ['proyectos', '🏗️ Proyectos'], has('admin') && ['datos', '💾 Datos']].filter(Boolean);
+    const tabs = [has('admin') && ['enlace', '🔗 Enlace de solicitudes'], has('admin') && ['usuarios', '👥 Usuarios'], ['proveedores', '🏪 Proveedores'], ['proyectos', '🏗️ Proyectos'], has('admin') && ['datos', '💾 Datos']].filter(Boolean);
+    if (S.admTab === 'enlace' && store.mode === 'supabase') S.admTab = 'usuarios';
     if (!tabs.find(t => t[0] === S.admTab)) S.admTab = tabs[0][0];
     let body = '';
     if (S.admTab === 'usuarios') body = `<div class="row between wrap"><p class="muted">Cada persona entra con su correo y contraseña. Los roles definen qué puede hacer.</p><button class="btn primary" onclick="App.modalUsuario()">＋ Nuevo usuario</button></div>
@@ -782,6 +890,7 @@ Enviar la cotización respondiendo a este mensaje o al correo ${esc(EMP.email ||
       <div class="scroll-x"><table class="tbl hover"><thead><tr><th>Proyecto</th><th class="r">Solicitudes</th><th>Estado</th></tr></thead><tbody>
       ${S.proyectos.map(p => `<tr onclick="App.modalProyecto('${p.id}')"><td><b>${esc(p.nombre)}</b></td><td class="r">${S.reqs.filter(r => r.proyectoId === p.id).length}</td><td>${p.activo === false ? '<span class="badge b-gray">Inactivo</span>' : '<span class="badge b-green">Activo</span>'}</td></tr>`).join('')}
       </tbody></table></div>`;
+    if (S.admTab === 'enlace') body = enlaceHtml();
     if (S.admTab === 'datos') body = `<p>Descargue una copia de seguridad de toda la información (solicitudes, cotizaciones, pagos, proveedores y proyectos).</p>
       <div class="row gap wrap"><button class="btn" onclick="App.backup()">⬇️ Descargar copia (JSON)</button><button class="btn" onclick="App.exportItems()">⬇️ Detalle de ítems (Excel)</button>
       ${DEMO ? `<button class="btn danger-ghost" onclick="App.resetDemo()">Reiniciar datos de demostración</button>` : ''}</div>
@@ -798,6 +907,33 @@ Enviar la cotización respondiendo a este mensaje o al correo ${esc(EMP.email ||
       <div class="tabs">${tabs.map(([k, l]) => `<button class="${S.admTab === k ? 'on' : ''}" onclick="App.admTab('${k}')">${l}</button>`).join('')}</div>${body}</section>`;
   }
 
+  function enlaceHtml() {
+    const b = store.buzonInfo && store.buzonInfo();
+    const url = new URL('solicitud.html', location.href.split('#')[0]).href;
+    const msg = `Hola. Para pedir materiales para la obra, entra aquí desde el celular, escribe tu cédula, tu nombre, el proyecto y lo que necesitas: ${url}`;
+    const enl = S.reqs.filter(r => r.origen === 'enlace');
+    return `<p>Los trabajadores <b>no necesitan usuario</b>: entran al enlace, escriben su cédula, su nombre, el proyecto y lo que necesitan. La solicitud llega a la app como <b>Por revisar</b> y se notifica a los jefes. Con su cédula, cada persona puede consultar en el mismo enlace el estado de lo que ha pedido.</p>
+      ${b ? `<div class="alert">✓ Enlace activo${GHM ? ` · las solicitudes se reciben cifradas en el buzón <b>${esc(b.owner)}/${esc(b.repo)}</b>` : ' (demostración: funciona solo en este navegador)'}. Llevan ${enl.length} solicitud(es) recibidas por el enlace.</div>
+      <label>Enlace para compartir<div class="row gap wrap"><input id="enlaceUrl" readonly value="${esc(url)}" style="flex:1;min-width:220px">
+        <button type="button" class="btn" onclick="navigator.clipboard&&navigator.clipboard.writeText(document.getElementById('enlaceUrl').value).then(()=>App.toast('Enlace copiado'))">Copiar</button>
+        <a class="btn" target="_blank" rel="noopener" href="https://wa.me/?text=${encodeURIComponent(msg)}">💬 Enviar por WhatsApp</a>
+        <a class="btn ghost" target="_blank" rel="noopener" href="${esc(url)}">Abrir</a></div></label>
+      <p class="muted sm">Los proyectos activos aparecen en la lista del enlace. Si crea o cambia un proyecto, el enlace se actualiza en uno o dos minutos.</p>` : ''}
+      ${GHM ? `<h2>${b ? 'Cambiar el buzón o el token' : 'Activar el enlace'}</h2>
+      <ol class="steps">
+        <li>Use un <b>repositorio privado</b> como buzón. Sirve el mismo buzón de la app de PAGOS (cada app toma solo sus envíos), o cree uno nuevo, por ejemplo <i>buzon-compras</i>.</li>
+        <li>Cree un <b>token de acceso fino</b> distinto al de la app: Repository access → <b>solo el buzón</b>; Permissions → <b>Issues: Read and write</b>. También sirve el token del buzón de PAGOS.</li>
+        <li>Escriba el nombre del buzón, pegue el token y haga clic en Activar.</li>
+      </ol>
+      <form class="grid2" onsubmit="App.activarEnlace(event)">
+        <label>Repositorio buzón<input name="repo" value="${esc(b ? b.repo : '')}" placeholder="buzon-compras" autocapitalize="none" required></label>
+        <label>Token del buzón<input name="token" type="password" autocomplete="off" required></label>
+        <div class="actions left full"><button class="btn primary">${b ? 'Actualizar' : 'Activar enlace'}</button></div>
+      </form>
+      <p class="muted sm">El token queda en la configuración pública del enlace (ofuscado). Solo permite crear envíos en el buzón; los envíos van cifrados y únicamente la app puede abrirlos.</p>`
+      : (!b ? `<form onsubmit="App.activarEnlace(event)"><button class="btn primary">Activar enlace (demostración)</button></form>` : '')}`;
+  }
+
   /* ------------------------------------------------------------ ACCIONES */
   const App = {};
   App.cerrarModal = cerrarModal;
@@ -805,7 +941,7 @@ Enviar la cotización respondiendo a este mensaje o al correo ${esc(EMP.email ||
   App.demoFill = e => { const f = $('#fLogin'); f.email.value = e; f.pass.value = 'demo123'; f.requestSubmit ? f.requestSubmit() : f.dispatchEvent(new Event('submit')); };
   App.login = async ev => {
     ev.preventDefault(); const f = new FormData(ev.target); const err = $('#loginErr'); err.textContent = '';
-    try { busy(true); S.user = await store.login(f.get('email'), f.get('pass'), !!f.get('recordar')); busy(false); if (!location.hash || location.hash === '#/') location.hash = '#/inicio'; await route(); }
+    try { busy(true); S.user = await store.login(f.get('email'), f.get('pass'), !!f.get('recordar')); busy(false); if (!location.hash || location.hash === '#/') location.hash = '#/inicio'; await route(); revisarBuzon(); }
     catch (e) { err.textContent = e.message; if (store.needsSetup) paintSetup(); } finally { busyN = 0; busy(false); }
   };
   App.activar = async ev => {
@@ -935,9 +1071,12 @@ Enviar la cotización respondiendo a este mensaje o al correo ${esc(EMP.email ||
     const r = S.reqs.find(x => x.id === id);
     const its = r.items.filter(i => ['aprobado', 'cotizando', 'cotizado'].includes(itemStage(r, i)));
     const provs = S.proveedores.filter(p => p.activo !== false);
+    const marcado = i => directa || itemStage(r, i) === 'aprobado' || !its.some(x => itemStage(r, x) === 'aprobado');
     modal(directa ? 'Registrar cotización ya recibida' : 'Solicitar cotización', `<form onsubmit="App.crearRFQ(event,'${id}',${!!directa})">
-      <h3>Ítems a cotizar</h3>
-      <div class="checks">${its.map(i => { const st = itemStage(r, i); return `<label class="check"><input type="checkbox" name="it" value="${i.id}" ${st === 'aprobado' ? 'checked' : ''}> ${esc(i.descripcion)} <span class="muted">· ${i.cantidad} ${esc(i.unidad)}</span> ${st !== 'aprobado' ? badge(ITEM_EST, st) : ''}</label>`; }).join('')}</div>
+      <div class="row between wrap"><h3>${directa ? 'Ítems que trae la cotización' : 'Ítems a cotizar'}</h3>
+        <div class="row gap"><button type="button" class="link" onclick="App.marcarItems(this.form,true)">Todos</button><button type="button" class="link" onclick="App.marcarItems(this.form,false)">Ninguno</button></div></div>
+      <div class="checks">${its.map(i => { const st = itemStage(r, i); return `<label class="check"><input type="checkbox" name="it" value="${i.id}" ${marcado(i) ? 'checked' : ''}> ${esc(i.descripcion)} <span class="muted">· ${i.cantidad} ${esc(i.unidad)}</span> ${st !== 'aprobado' ? badge(ITEM_EST, st) : ''}</label>`; }).join('')}</div>
+      ${directa ? '<p class="muted sm">En el siguiente paso también puede quitar o agregar ítems, y la lectura automática marca los que vengan en el PDF.</p>' : ''}
       <h3>${directa ? 'Proveedor' : 'Proveedor(es)'} <small class="muted">${directa ? '' : '— se genera un documento por proveedor'}</small></h3>
       <div class="checks">${provs.map(p => `<label class="check"><input type="${directa ? 'radio' : 'checkbox'}" name="pv" value="${p.id}"> ${esc(p.nombre)} <span class="muted">${esc(p.telefono || '')}</span></label>`).join('') || '<p class="muted">No hay proveedores registrados.</p>'}</div>
       <details ${provs.length ? '' : 'open'}><summary>＋ Proveedor nuevo</summary><div class="grid2">
@@ -957,42 +1096,72 @@ Enviar la cotización respondiendo a este mensaje o al correo ${esc(EMP.email ||
       S.proveedores.push(p); provIds = directa ? [p.id] : [...provIds, p.id];
     }
     if (!provIds.length) throw new Error('Seleccione o cree un proveedor');
-    let creadas = [];
+    provIds = [...new Set(provIds)];
+    // Una sola cotización abierta por proveedor y por ítem: si ya existe, se reutiliza en vez de duplicarla.
+    let creadas = [], avisos = [];
     const res = await mutate(id, r => {
-      creadas = [];
+      creadas = []; avisos = [];
+      const validos = itemIds.filter(x => r.items.some(i => i.id === x));
       for (const pid of provIds) {
         const p = S.proveedores.find(x => x.id === pid);
+        const abiertas = r.cotizaciones.filter(c => c.proveedorId === pid && ['solicitada', 'recibida'].includes(c.estado));
+        const pendiente = abiertas.find(c => c.estado === 'solicitada');
+        const yaRecibidos = new Set(abiertas.filter(c => c.estado === 'recibida').flatMap(c => c.itemIds));
+        if (directa && pendiente) {
+          // La cotización que llegó responde a la solicitud que ya se le había hecho a ese proveedor
+          validos.forEach(x => { if (!pendiente.itemIds.includes(x)) pendiente.itemIds.push(x); });
+          creadas.push(pendiente); continue;
+        }
+        const faltan = validos.filter(x => !yaRecibidos.has(x) && !(pendiente && pendiente.itemIds.includes(x)));
+        if (pendiente && faltan.length) {
+          pendiente.itemIds.push(...faltan);
+          log(r, 'Ítems agregados a la solicitud de cotización', `${pendiente.codigo} · ${p.nombre} (+${faltan.length} ítem(s))`);
+          creadas.push(pendiente); avisos.push(`${p.nombre}: se agregaron ${faltan.length} ítem(s) a ${pendiente.codigo}.`); continue;
+        }
+        if (!faltan.length) { avisos.push(`${p.nombre}: ya tiene una cotización abierta con esos ítems${pendiente ? ' (' + pendiente.codigo + ')' : ''}; no se creó otra.`); if (pendiente) creadas.push(pendiente); continue; }
         const c = {
           id: newId(), codigo: `SC-${String(r.numero).padStart(4, '0')}-${r.cotizaciones.length + 1}`, proveedorId: p.id, proveedorNombre: p.nombre,
-          itemIds: itemIds.filter(x => r.items.some(i => i.id === x)), estado: 'solicitada', fechaSolicitud: now(), solicitadaPor: S.user.id, solicitadaPorNombre: S.user.nombre,
+          itemIds: faltan, estado: 'solicitada', fechaSolicitud: now(), solicitadaPor: S.user.id, solicitadaPorNombre: S.user.nombre,
           observaciones: directa ? '' : String(f.get('obs') || '').trim(), fechaLimite: f.get('limite') || null, precios: {}
         };
         r.cotizaciones.push(c); creadas.push(c);
         log(r, directa ? 'Cotización directa iniciada' : 'Solicitud de cotización generada', `${c.codigo} a ${p.nombre} (${c.itemIds.length} ítem(s))`);
       }
+      if (!creadas.length) return false;
     });
-    if (directa) return App.modalRespuesta(id, creadas[0].id);
+    if (!res) { cerrarModal(); paint(); return toast(avisos.join(' ') || 'No hubo cambios'); }
+    if (directa) return App.modalRespuesta(id, creadas[0].id, itemIds);
     const r = res.r;
     paint();
     modal('Solicitudes de cotización listas', `<p>Envíe cada documento al proveedor. Queda registrado como <b>esperando proveedor</b> hasta que registre la cotización recibida.</p>
+      ${avisos.length ? `<div class="alert">${avisos.map(esc).join('<br>')}</div>` : ''}
       ${creadas.map(c => { const p = S.proveedores.find(x => x.id === c.proveedorId) || {}; return `<div class="sent"><div><b>${c.codigo}</b> · ${esc(c.proveedorNombre)}<br><small class="muted">${esc(p.telefono || 'sin teléfono')} · ${esc(p.email || 'sin correo')}</small></div>
         <div class="row gap wrap"><button class="btn sm" onclick="App.docRFQ('${r.id}','${c.id}')">📄 Ver / PDF</button><a class="btn sm" target="_blank" rel="noopener" href="${waLink(r, c, p)}">💬 WhatsApp</a><a class="btn sm" href="${mailLink(r, c, p)}">✉️ Correo</a></div></div>`; }).join('')}
       <div class="actions"><button class="btn primary" onclick="App.cerrarModal()">Listo</button></div>`, true);
   });
   App.docRFQ = docRFQ;
-  App.modalRespuesta = (id, cid) => {
+  App.marcarItems = (form, si) => $$('input[name=it], input.incl', form).forEach(x => { x.checked = si; x.dispatchEvent(new Event('change', { bubbles: true })); });
+  // Ítems que puede traer una cotización: los de la solicitud de cotización y cualquier otro aprobado sin comprar.
+  const itemsCotizables = (r, c) => {
+    const ids = new Set(c.itemIds);
+    return r.items.filter(i => ids.has(i.id) || ['aprobado', 'cotizando', 'cotizado'].includes(itemStage(r, i)));
+  };
+  App.modalRespuesta = (id, cid, preIds) => {
     const r = S.reqs.find(x => x.id === id), c = r.cotizaciones.find(x => x.id === cid);
-    const its = cotItems(r, c);
+    const its = itemsCotizables(r, c);
+    const incluido = new Set(preIds && preIds.length ? preIds : c.itemIds);
     S.cotForm = { id, cid };
     modal(`Cotización ${c.codigo} · ${esc(c.proveedorNombre)}`, `<form id="fCot" onsubmit="App.guardarCot(event,'${id}','${cid}')" oninput="App.calcCot()" onchange="App.calcCot()">
       <div class="lectura">
         <label>📄 Cotización del proveedor (PDF o foto)<input type="file" name="archivo" accept="application/pdf,image/*" onchange="App.leerCot(this,'${id}','${cid}')"></label>
         <p class="muted sm" id="cotLectura">Al elegir el archivo, la app lo lee y llena el producto, la cantidad, el IVA y el precio de cada renglón. Revise los datos antes de guardar.</p>
       </div>
-      <h3>Ítems pedidos</h3>
-      <p class="muted sm">Deje el precio en blanco en los ítems que el proveedor no cotizó.</p>
-      <div class="scroll-x"><table class="tbl cotform"><thead><tr><th>Ítem pedido</th><th>Producto del proveedor</th><th class="r">Cant.</th><th class="r">IVA</th><th class="r">Vr. unitario</th><th class="r">Subtotal</th></tr></thead><tbody>
-      ${its.map(i => `<tr class="rq" data-id="${i.id}"><td>${esc(i.descripcion)}<br><small class="muted">pedido: ${i.cantidad} ${esc(i.unidad)}</small></td>
+      <div class="row between wrap"><h3>Ítems pedidos</h3>
+        <div class="row gap"><button type="button" class="link" onclick="App.marcarItems(this.form,true)">Incluir todos</button><button type="button" class="link" onclick="App.marcarItems(this.form,false)">Ninguno</button></div></div>
+      <p class="muted sm">Marque los ítems que trae esta cotización. Los no marcados no se incluyen.</p>
+      <div class="scroll-x"><table class="tbl cotform"><thead><tr><th></th><th>Ítem pedido</th><th>Producto del proveedor</th><th class="r">Cant.</th><th class="r">IVA</th><th class="r">Vr. unitario</th><th class="r">Subtotal</th></tr></thead><tbody>
+      ${its.map(i => `<tr class="rq${incluido.has(i.id) ? '' : ' off'}" data-id="${i.id}"><td><input type="checkbox" class="incl" name="in_${i.id}" ${incluido.has(i.id) ? 'checked' : ''} onchange="this.closest('tr').classList.toggle('off',!this.checked)" aria-label="Incluir"></td>
+        <td>${esc(i.descripcion)}<br><small class="muted">pedido: ${i.cantidad} ${esc(i.unidad)}${!c.itemIds.includes(i.id) && itemStage(r, i) !== 'aprobado' ? ' · ' + ITEM_EST[itemStage(r, i)].l.toLowerCase() : ''}</small></td>
         <td><input name="prod_${i.id}" value="${esc(prodC(c, i))}" placeholder="Como lo escribe el proveedor"></td>
         <td class="r"><input class="qty-in" type="number" min="0" step="any" inputmode="decimal" name="q_${i.id}" value="${cantC(c, i)}"></td>
         <td class="r">${ivaSelect('iva_' + i.id, ivaC(c, i))}</td>
@@ -1038,7 +1207,7 @@ Enviar la cotización respondiendo a este mensaje o al correo ${esc(EMP.email ||
   App.addExtra = (d = {}) => {
     const { id, cid } = S.cotForm || {}; const r = S.reqs.find(x => x.id === id); if (!r) return;
     const c = r.cotizaciones.find(x => x.id === cid);
-    $('#extras').insertAdjacentHTML('beforeend', extraHtml(d, cotItems(r, c)));
+    $('#extras').insertAdjacentHTML('beforeend', extraHtml(d, itemsCotizables(r, c)));
     $('#extrasBox').hidden = false; App.calcCot();
   };
   // Lee el formulario: lo cotizado por cada ítem pedido y los renglones nuevos (los extras pueden reemplazar a un ítem).
@@ -1047,6 +1216,7 @@ Enviar la cotización respondiendo a este mensaje o al correo ${esc(EMP.email ||
     const porItem = {}, nuevos = [];
     $$('tr.rq', form).forEach(tr => {
       const i = tr.dataset.id, p = num(el('p_' + i).value);
+      if (!el('in_' + i).checked) return;
       if (p > 0) porItem[i] = { precio: p, cant: num(el('q_' + i).value) || 0, iva: num(el('iva_' + i).value), prod: el('prod_' + i).value.trim() };
     });
     $$('tr.ex', form).forEach(tr => {
@@ -1061,7 +1231,8 @@ Enviar la cotización respondiendo a este mensaje o al correo ${esc(EMP.email ||
     const file = input.files && input.files[0]; if (!file) return;
     const f = $('#fCot'), st = $('#cotLectura');
     const r = S.reqs.find(x => x.id === id), c = r.cotizaciones.find(x => x.id === cid);
-    const items = cotItems(r, c);
+    // Se buscan todos los ítems cotizables; los que vengan en el PDF quedan marcados.
+    const items = itemsCotizables(r, c);
     let clave = null; try { clave = await store.getClaudeKey(); } catch (e) { }
     if (!window.LectorCot) { st.textContent = 'El lector no está disponible. Recargue la página (Ctrl + F5).'; return; }
     st.className = 'sm lect-trab'; st.textContent = clave ? '⏳ Leyendo la cotización con Claude…' : '⏳ Leyendo la cotización…';
@@ -1077,6 +1248,7 @@ Enviar la cotización respondiendo a este mensaje o al correo ${esc(EMP.email ||
       for (const l of d.lineas) {
         if (l.itemId && E('p_' + l.itemId)) {
           const i = l.itemId; asociados++;
+          if (!E('in_' + i).checked) { E('in_' + i).checked = true; E('in_' + i).closest('tr').classList.remove('off'); }
           E('p_' + i).value = Math.round(l.precio * 100) / 100; marcar(E('p_' + i));
           E('q_' + i).value = l.cantidad; marcar(E('q_' + i));
           if (l.producto) { E('prod_' + i).value = l.producto; marcar(E('prod_' + i)); }
@@ -1091,7 +1263,8 @@ Enviar la cotización respondiendo a este mensaje o al correo ${esc(EMP.email ||
       if (d.nota && !E('nota').value.trim()) { E('nota').value = d.nota; marcar(E('nota')); }
       App.calcCot();
       const extras = d.lineas.length - asociados;
-      const faltan = items.filter(it => !d.lineas.some(l => l.itemId === it.id)).map(it => it.descripcion);
+      const marcados = items.filter(it => E('in_' + it.id) && E('in_' + it.id).checked);
+      const faltan = marcados.filter(it => !d.lineas.some(l => l.itemId === it.id)).map(it => it.descripcion);
       let msg = `${res.fuente === 'claude' ? '✓ Leída con Claude' : '✓ Leída'}: ${d.lineas.length} renglón(es); ${asociados} corresponden a ítems pedidos${extras ? ` y ${extras} no estaban en la solicitud (abajo: elija qué hacer con ellos)` : ''}. Los campos en verde vienen de la cotización; revíselos.`;
       if (faltan.length) msg += ` Sin cotizar: ${faltan.join(', ')}.`;
       if (d.total) {
@@ -1105,6 +1278,13 @@ Enviar la cotización respondiendo a este mensaje o al correo ${esc(EMP.email ||
       console.error(e); st.className = 'sm lect-mal'; st.textContent = '⚠️ No se pudo leer el archivo (' + (e.message || e) + '). Ingrese los datos a mano.';
     }
   };
+  App.toast = toast;
+  App.activarEnlace = run(async ev => {
+    ev.preventDefault(); const f = new FormData(ev.target);
+    await store.activarBuzon(String(f.get('repo') || '').trim(), String(f.get('token') || '').trim());
+    await publicarCfgSolicitud();
+    toast(GHM ? 'Enlace activo. En uno o dos minutos queda publicado.' : 'Enlace activo (demostración)'); paint();
+  });
   App.guardarClaude = run(async ev => {
     ev.preventDefault(); const k = String(new FormData(ev.target).get('clave') || '').trim();
     if (!/^sk-ant-/.test(k)) throw new Error('La clave de la API de Claude empieza por "sk-ant-"');
@@ -1143,7 +1323,7 @@ Enviar la cotización respondiendo a este mensaje o al correo ${esc(EMP.email ||
           nota: 'Agregado por compras desde la cotización ' + c.codigo, decididoEn: t, decididoPor: S.user.id, decididoPorNombre: S.user.nombre });
       });
       const todo = { ...porItem }; nuevos.forEach((d, k) => { todo[nuevosId[k]] = d; });
-      c.itemIds = c.itemIds.filter(i => todo[i]).concat(nuevosId.filter(i => !c.itemIds.includes(i)));
+      c.itemIds = Object.keys(todo).filter(i => r.items.some(x => x.id === i));
       c.precios = {}; c.cantidades = {}; c.ivas = {}; c.productos = {};
       for (const i of c.itemIds) { const d = todo[i]; c.precios[i] = d.precio; c.cantidades[i] = d.cant; c.ivas[i] = d.iva; if (d.prod) c.productos[i] = d.prod; }
       const ivasUnicos = [...new Set(Object.values(c.ivas))];
@@ -1163,6 +1343,15 @@ Enviar la cotización respondiendo a este mensaje o al correo ${esc(EMP.email ||
     const motivo = prompt('¿Por qué se anula esta solicitud de cotización? (ej: proveedor no respondió)'); if (motivo == null) return;
     await mutate(id, r => { const c = r.cotizaciones.find(x => x.id === cid); c.estado = 'anulada'; c.notaJefe = 'Anulada: ' + motivo; log(r, 'Cotización anulada', `${c.codigo} · ${c.proveedorNombre} · ${motivo}`); });
     toast('Cotización anulada'); paint();
+  });
+  App.anularRepetidas = run(async id => {
+    let n = 0;
+    await mutate(id, r => {
+      n = 0;
+      for (const c of repetidas(r)) { c.estado = 'anulada'; c.notaJefe = 'Anulada: repetida'; n++; log(r, 'Cotización anulada', `${c.codigo} · ${c.proveedorNombre} · repetida`); }
+      if (!n) return false;
+    });
+    toast(n ? `Se anularon ${n} cotización(es) repetida(s)` : 'No había repetidas'); paint();
   });
   App.verArchivo = run(abrirArchivo);
 
@@ -1237,6 +1426,7 @@ Enviar la cotización respondiendo a este mensaje o al correo ${esc(EMP.email ||
 
   // Listas y filtros
   App.filtro = (k, v) => { S.f[k] = v; pintarListaReqs(); };
+  App.verPersona = q => { Object.assign(S.f, { q, estado: 'todas', proyecto: '', mias: false }); location.hash = '#/requisiciones'; };
   App.cotTab = k => { S.cotTab = k; paint(); };
   App.admTab = k => { S.admTab = k; paint(); };
   App.repF = (k, v) => { S.rep[k] = v; paint(); };
@@ -1293,6 +1483,7 @@ Enviar la cotización respondiendo a este mensaje o al correo ${esc(EMP.email ||
     ev.preventDefault(); const f = new FormData(ev.target);
     await store.upsert('proyectos', { id: id || newId(), nombre: f.get('nombre').trim(), activo: !!f.get('activo') });
     cerrarModal(); toast('Proyecto guardado'); await route();
+    await publicarCfgSolicitud();   // la lista de proyectos del enlace público
   });
   App.backup = run(async () => {
     const d = await store.loadAll();
@@ -1334,10 +1525,12 @@ Enviar la cotización respondiendo a este mensaje o al correo ${esc(EMP.email ||
       if (ahora > antes) toast('Tiene ' + (ahora - antes) + ' notificación(es) nueva(s)');
     } catch (e) { }
   }, 30000);
+  setInterval(() => { if (S.user && !document.hidden) revisarBuzon(); }, 60000);
 
   (async () => {
     try { S.user = await store.init(); }
     catch (e) { S.user = null; $('#app').innerHTML = `<div class="login"><div class="card login-card"><div class="logo">📦</div><p>${esc(e.message)}</p></div></div>`; return; }
     await route();
+    if (S.user) revisarBuzon();
   })();
 })();

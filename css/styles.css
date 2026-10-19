@@ -182,6 +182,9 @@ td.best { background: var(--green-s); color: var(--green); font-weight: 700; }
 .tbl.hover tbody tr { cursor: pointer; } .tbl.hover tbody tr:hover { background: var(--soft); }
 input.money { width: 120px; text-align: right; min-height: 36px; }
 .cotform td { vertical-align: middle; }
+.cotform tr.off td:not(:first-child) { opacity: .4; }
+.cotform tr.off input:not(.incl), .cotform tr.off select { pointer-events: none; }
+.cotform input.incl { width: 20px; height: 20px; min-height: 0; }
 .cotform input, .cotform select { min-height: 36px; padding: .35rem .45rem; }
 .cotform input[name^=prod_], .cotform input[name^=exprod_] { min-width: 200px; }
 .cotform .qty-in { width: 80px; text-align: right; }
@@ -232,6 +235,17 @@ label.check.auto { border-radius: 8px; padding: .2rem .4rem; }
 #busy .spinner { height: 100%; width: 35%; background: var(--pri); animation: carga 1s infinite ease-in-out; }
 @keyframes carga { from { transform: translateX(-100%); } to { transform: translateX(300%); } }
 .loading { padding: 3rem; text-align: center; color: var(--muted); }
+#busy::after { content: 'Guardando…'; position: fixed; top: 10px; left: 50%; transform: translateX(-50%); background: var(--ink); color: #fff; font-size: .82rem; font-weight: 600; padding: .3rem .9rem; border-radius: 99px; box-shadow: 0 4px 14px rgba(0, 0, 0, .2); }
+body.ocupado { cursor: progress; }
+
+/* Enlace público de solicitudes */
+.pub-top { display: flex; align-items: center; gap: .6rem; padding: .7rem 16px; background: #fff; border-bottom: 1px solid var(--line); position: sticky; top: 0; z-index: 10; }
+.pub-top b { display: block; line-height: 1.1; } .pub-top small { color: var(--muted); }
+main.pub { max-width: 760px; padding-bottom: 3rem; }
+.publica .tabs { background: #fff; border-radius: var(--r); padding: 0 .4rem; box-shadow: var(--sh); }
+.listo { text-align: center; padding: 1rem 0; }
+.listo .rad { font-size: 1.4rem; letter-spacing: .12em; color: var(--pri); }
+.listo .btn { margin: .3rem; }
 
 /* Celular */
 @media (max-width: 860px) {

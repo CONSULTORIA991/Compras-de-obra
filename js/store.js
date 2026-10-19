@@ -67,8 +67,31 @@
       },
       async getReq(id) { load(); const r = db.reqs.find(x => x.id === id); return r ? clone(r) : null; },
       async createReq(req) {
-        load(); db.seq = (db.seq || 0) + 1;
+        load();
+        const ya = req.radicado && db.reqs.find(x => x.radicado === req.radicado);
+        if (ya) return clone(ya);
+        db.seq = (db.seq || 0) + 1;
         const r = clone(req); r.numero = db.seq; r._v = 1; db.reqs.push(r); persist(); return clone(r);
+      },
+      // --- enlace público de solicitudes (en demostración vive en este navegador)
+      buzonInfo() { return db && db.buzon ? { repo: 'demostración (este navegador)' } : null; },
+      async activarBuzon() { load(); db.buzon = { activo: true }; persist(); },
+      async publicarConfigSolicitud(proyectos) {
+        if (!db || !db.buzon) return;
+        try { localStorage.setItem('compras_solcfg_demo', JSON.stringify({ v: 1, demo: true, proyectos })); } catch (e) { }
+      },
+      async leerBuzon() {
+        let l = []; try { l = JSON.parse(localStorage.getItem('compras_buzon_demo') || '[]'); } catch (e) { }
+        return l.map(d => ({ ref: d.radicado, datos: d }));
+      },
+      async cerrarEnvio(ref) {
+        try { const l = JSON.parse(localStorage.getItem('compras_buzon_demo') || '[]').filter(d => d.radicado !== ref); localStorage.setItem('compras_buzon_demo', JSON.stringify(l)); } catch (e) { }
+      },
+      async publicarEstado(cedula, obj) {
+        const id = await Sobre.idEstado(cedula);
+        let m = {}; try { m = JSON.parse(localStorage.getItem('compras_estado_demo') || '{}'); } catch (e) { }
+        m[id] = JSON.stringify({ v: 1, d: Sobre.b64(await Sobre.cifrarEstado(cedula, obj)) });
+        try { localStorage.setItem('compras_estado_demo', JSON.stringify(m)); } catch (e) { }
       },
       async saveReq(req) {
         load(); const i = db.reqs.findIndex(x => x.id === req.id);
@@ -188,6 +211,9 @@
       async markRead(ids) { if (ids.length) chk(await sb.from('notificaciones').update({ leida: true }).in('id', ids)); },
       async getClaudeKey() { return null; },
       async setClaudeKey() { throw new Error('La lectura con Claude no está disponible en el modo Supabase.'); },
+      buzonInfo() { return null; },
+      async activarBuzon() { throw new Error('El enlace público de solicitudes no está disponible en el modo Supabase.'); },
+      async publicarConfigSolicitud() { }, async leerBuzon() { return []; }, async cerrarEnvio() { }, async publicarEstado() { },
       reset() { }
     };
   }
@@ -208,7 +234,7 @@
     const SES = 'compras-obra-sesion';
     const API = 'https://api.github.com';
     let gh = { owner: '', repo: '', branch: cfg.GITHUB_RAMA || 'main', token: '' };
-    let maestra = null, rawM = null, uid = null, conf = null, confEtag = null, cache = null, etag = null;
+    let maestra = null, rawM = null, uid = null, conf = null, confEtag = null, cache = null, etag = null, api_buzon = null;
 
     // --- cifrado
     const b64 = u8 => { let s = ''; for (let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000)); return btoa(s); };
@@ -405,9 +431,81 @@
       },
       async getReq(id) { const d = await datos(true); const r = d.reqs.find(x => x.id === id); return r ? clone(r) : null; },
       async createReq(req) {
-        const r = clone(req);
-        await mutarDatos(d => { d.seq = (d.seq || 0) + 1; r.numero = d.seq; r._v = 1; d.reqs = d.reqs.filter(x => x.id !== r.id); d.reqs.push(clone(r)); });
+        let r = clone(req);
+        await mutarDatos(d => {
+          const ya = r.radicado && d.reqs.find(x => x.radicado === r.radicado);   // envío del enlace ya registrado
+          if (ya) { r = clone(ya); return false; }
+          d.seq = (d.seq || 0) + 1; r.numero = d.seq; r._v = 1; d.reqs = d.reqs.filter(x => x.id !== r.id); d.reqs.push(clone(r));
+        });
         return r;
+      },
+      // --- enlace público de solicitudes: buzón (repositorio privado) + configuración pública
+      buzonInfo() { return conf && conf.buzon ? { owner: conf.buzon.owner, repo: conf.buzon.repo } : null; },
+      async activarBuzon(repo, token) {
+        repo = String(repo || '').trim().replace(/^.*\//, '');
+        if (!repo || !token) throw new Error('Escriba el repositorio buzón y el token');
+        if (repo.toLowerCase() === gh.repo.toLowerCase()) throw new Error('El buzón debe ser un repositorio distinto al de la app (y privado).');
+        if (token === conf.token) throw new Error('Use un token distinto al de la app: este queda en el formulario público.');
+        const r = await fetch(`${API}/repos/${gh.owner}/${repo}`, { headers: { Accept: 'application/vnd.github+json', Authorization: 'Bearer ' + token }, cache: 'no-store' });
+        if (!r.ok) throw new Error(r.status === 404 ? 'No encontré el repositorio buzón o el token no tiene acceso a él.' : 'El token del buzón no es válido (error ' + r.status + ').');
+        if (!(await r.json()).private) throw new Error('El repositorio buzón debe ser privado.');
+        const par = conf.buzon && conf.buzon.priv ? { pub: conf.buzon.pub, priv: conf.buzon.priv } : await Sobre.generarPar();
+        await mutarConf(c => { c.buzon = { owner: gh.owner, repo, token, pub: par.pub, priv: par.priv }; });
+      },
+      async publicarConfigSolicitud(proyectos) {
+        if (!conf || !conf.buzon) return;
+        const b = conf.buzon;
+        const pub = { v: 1, owner: b.owner, repo: b.repo, t: Sobre.ofuscar(b.token), pub: b.pub, proyectos };
+        const texto = JSON.stringify(pub, null, 1);
+        for (let i = 0; i < 3; i++) {
+          const actual = await leer('solicitud-config.json');
+          if (actual && dec.decode(actual.bytes) === texto) return;
+          try { await escribir('solicitud-config.json', enc.encode(texto), actual && actual.sha); return; }
+          catch (e) { if (!e.conflicto) throw e; await espera(); }
+        }
+      },
+      async leerBuzon() {
+        const b = conf && conf.buzon; if (!b) return [];
+        const api = async (ruta, metodo, cuerpo) => {
+          const r = await fetch(`${API}/repos/${b.owner}/${b.repo}${ruta}`, { method: metodo || 'GET', cache: 'no-store',
+            headers: { Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28', Authorization: 'Bearer ' + b.token, ...(cuerpo ? { 'Content-Type': 'application/json' } : {}) },
+            body: cuerpo ? JSON.stringify(cuerpo) : undefined });
+          if (!r.ok && r.status !== 204) { const e = new Error(r.status === 401 ? 'El token del buzón de solicitudes venció o no es válido (Admin → Enlace).' : 'Error del buzón (' + r.status + ')'); e.status = r.status; throw e; }
+          return r.status === 204 ? null : r.json();
+        };
+        api_buzon = api;
+        const issues = (await api('/issues?state=open&per_page=50&sort=created&direction=asc')).filter(i => !i.pull_request && /^compras-v1/.test(i.body || ''));
+        const out = [];
+        for (const is of issues) {
+          try {
+            const partes = Number(((is.body.match(/partes=(\d+)/) || [])[1]) || 1);
+            let sobre = is.body.slice(is.body.indexOf('\n') + 1), comentarios = [];
+            if (partes > 1) {
+              comentarios = (await api(`/issues/${is.number}/comments?per_page=100`)).sort((a, c) => a.id - c.id);
+              for (let k = 2; k <= partes; k++) {
+                const cm = comentarios.find(c => (c.body || '').startsWith(`parte ${k}\n`));
+                if (!cm) throw new Error('incompleto');
+                sobre += cm.body.slice(cm.body.indexOf('\n') + 1);
+              }
+            }
+            out.push({ ref: { n: is.number, comentarios: comentarios.map(c => c.id) }, datos: await Sobre.abrirSobre(b.priv, sobre) });
+          } catch (e) { /* envío incompleto o dañado: se deja en el buzón */ }
+        }
+        return out;
+      },
+      async cerrarEnvio(ref, rad) {
+        if (!api_buzon) return;
+        for (const id of ref.comentarios || []) await api_buzon(`/issues/comments/${id}`, 'DELETE');
+        await api_buzon(`/issues/${ref.n}`, 'PATCH', { state: 'closed', body: 'procesado ' + (rad || '') });
+      },
+      async publicarEstado(cedula, obj) {
+        const ruta = 'estado/' + await Sobre.idEstado(cedula) + '.json';
+        const bytes = enc.encode(JSON.stringify({ v: 1, d: b64(await Sobre.cifrarEstado(cedula, obj)) }));
+        for (let i = 0; i < 3; i++) {
+          const actual = await leer(ruta);
+          try { await escribir(ruta, bytes, actual && actual.sha); return; }
+          catch (e) { if (!e.conflicto) throw e; await espera(); }
+        }
       },
       async saveReq(req) {
         const r = clone(req); r._v = req._v + 1;

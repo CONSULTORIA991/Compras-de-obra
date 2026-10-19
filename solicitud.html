@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="robots" content="noindex, nofollow">
+  <meta name="theme-color" content="#1f5fbf">
+  <title>Pedir materiales</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📦</text></svg>">
+  <link rel="stylesheet" href="css/styles.css?v=5">
+</head>
+<body class="publica">
+  <header class="pub-top"><span class="logo-s">📦</span><div><b>Pedir materiales</b><small id="empresa"></small></div></header>
+  <main class="pub">
+    <div class="tabs" role="tablist">
+      <button type="button" class="on" id="tabNueva" onclick="Pub.tab('nueva')">✍️ Pedir materiales</button>
+      <button type="button" id="tabMias" onclick="Pub.tab('mias')">📋 Mis solicitudes</button>
+    </div>
+    <p id="aviso" class="alert amber" hidden></p>
+
+    <section id="vNueva" class="card">
+      <form id="fSol" novalidate>
+        <div class="grid2">
+          <label>Cédula *<input id="cedula" inputmode="numeric" autocomplete="off" required placeholder="Solo números"></label>
+          <label>Nombre completo *<input id="nombre" autocomplete="name" required></label>
+          <label>Proyecto / obra *<select id="proyecto" required><option value="">Seleccione…</option></select><input id="proyectoTxt" placeholder="Nombre de la obra" hidden></label>
+          <label>Celular (opcional)<input id="celular" inputmode="tel" autocomplete="tel" placeholder="Para avisarte"></label>
+          <label>Prioridad<select id="prioridad"><option value="normal">Normal</option><option value="urgente">🔴 Urgente</option></select></label>
+          <label>¿Para cuándo se necesita?<input id="fechaReq" type="date"></label>
+        </div>
+        <h2>¿Qué necesitas?</h2>
+        <div class="irow head"><span>Material o herramienta</span><span>Cant.</span><span>Unidad</span><span></span></div>
+        <div id="items"></div>
+        <div class="row gap wrap">
+          <button type="button" class="btn" onclick="Pub.fila()">＋ Agregar otro</button>
+          <button type="button" class="btn ghost" onclick="Pub.pegar()">📋 Pegar una lista</button>
+        </div>
+        <div id="pasteBox" class="paste" hidden>
+          <textarea id="pasteTxt" rows="5" placeholder="Una línea por material, por ejemplo:&#10;10 bultos cemento gris&#10;2 galones pintura blanca&#10;escoba"></textarea>
+          <button type="button" class="btn" onclick="Pub.convertir()">Convertir en lista</button>
+        </div>
+        <label>Observaciones<textarea id="notas" rows="2" placeholder="Para qué se necesita, dónde entregar, etc."></textarea></label>
+        <input id="sitio" tabindex="-1" autocomplete="off" aria-hidden="true" style="position:absolute;left:-9999px" placeholder="No llenar">
+        <p id="err" class="err" hidden></p>
+        <div class="actions"><button class="btn primary block" id="enviar">Enviar solicitud</button></div>
+      </form>
+      <div id="listo" hidden class="listo">
+        <div class="logo">✅</div>
+        <h2>Solicitud enviada</h2>
+        <p>Tu número de radicado es <b id="radicado" class="rad"></b>.</p>
+        <p class="muted">Los jefes la revisan y verás el avance en <b>Mis solicitudes</b> con tu cédula.</p>
+        <button class="btn primary" onclick="Pub.otra()">Hacer otra solicitud</button>
+        <button class="btn" onclick="Pub.tab('mias')">Ver mis solicitudes</button>
+      </div>
+    </section>
+
+    <section id="vMias" class="card" hidden>
+      <form id="fConsulta" class="row gap wrap" novalidate>
+        <label style="flex:1;min-width:180px;margin:0">Tu cédula<input id="cedulaC" inputmode="numeric" autocomplete="off" required placeholder="Solo números"></label>
+        <button class="btn primary" style="align-self:flex-end">Consultar</button>
+      </form>
+      <div id="mias"></div>
+    </section>
+  </main>
+
+  <script src="js/config.js?v=5"></script>
+  <script src="js/sobre.js?v=5"></script>
+  <script src="js/solicitud.js?v=5"></script>
+</body>
+</html>

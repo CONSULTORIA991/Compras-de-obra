@@ -78,6 +78,21 @@ péguelo en **Admin → Datos → Token de GitHub**.
 **Si alguien olvida su contraseña**, el administrador le asigna una nueva en Admin → Usuarios.
 Si una persona sale de la empresa, marque su usuario como **inactivo**.
 
+**Enlace para pedir materiales (sin usuario).** Los trabajadores de obra entran a
+`solicitud.html`, escriben su cédula, su nombre, el proyecto y lo que necesitan. Con la misma
+cédula consultan el estado de sus solicitudes. Se activa en **Admin → Enlace de solicitudes**:
+* Necesita un **repositorio privado** como buzón y un **token fino** con *Issues: Read and write*
+  solo sobre ese buzón. Sirven el mismo buzón y el mismo token de la app de PAGOS, porque cada app
+  toma solo sus envíos.
+* La solicitud se cifra en el celular con la llave pública de la empresa y queda en el buzón.
+  Cualquier jefe o persona de compras conectada la recoge, la registra como *Por revisar* y
+  vacía el envío.
+* El estado de cada persona se publica en `estado/`, cifrado con una llave derivada de su cédula.
+  Quien conozca una cédula puede ver lo que esa persona pidió y su estado (no se muestran precios
+  ni proveedores).
+* `solicitud-config.json` es público: lleva la llave pública, el token del buzón (ofuscado) y la
+  lista de proyectos activos.
+
 **Lectura automática de cotizaciones.** Al registrar la cotización de un proveedor, elija el PDF o
 la foto. La app la lee y llena los precios unitarios de cada ítem, el IVA, el flete, el tiempo
 de entrega, la forma de pago y la validez. Los campos llenados quedan en verde para revisarlos, y

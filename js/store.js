@@ -442,7 +442,8 @@
       // --- enlace público de solicitudes: buzón (repositorio privado) + configuración pública
       buzonInfo() { return conf && conf.buzon ? { owner: conf.buzon.owner, repo: conf.buzon.repo } : null; },
       async activarBuzon(repo, token) {
-        repo = String(repo || '').trim().replace(/^.*\//, '');
+        // Acepta la URL completa o el nombre con espacios (GitHub los convierte en guiones)
+        repo = String(repo || '').trim().replace(/\/+$/, '').replace(/^.*\//, '').replace(/\s+/g, '-');
         if (!repo || !token) throw new Error('Escriba el repositorio buzón y el token');
         if (repo.toLowerCase() === gh.repo.toLowerCase()) throw new Error('El buzón debe ser un repositorio distinto al de la app (y privado).');
         if (token === conf.token) throw new Error('Use un token distinto al de la app: este queda en el formulario público.');

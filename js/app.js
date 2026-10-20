@@ -709,7 +709,7 @@
     </style></head><body>
     <div class="bar">${copiar ? `<button class="g" onclick="navigator.clipboard&&navigator.clipboard.writeText(document.getElementById('txt').value).then(()=>alert('Texto copiado'))">Copiar texto</button>` : ''}<button onclick="print()">Imprimir / Guardar PDF</button></div>
     <div class="doc">
-      <div class="hd"><div class="emp"><img src="${LOGO}" alt="${esc(EMP.nombre)}"><div><b>${esc(EMP.nombre)}</b><p>${esc(EMP.nit || '')}</p><p>${esc(EMP.direccion || '')} ${esc(EMP.ciudad || '')}</p><p>${esc(EMP.telefono || '')} · ${esc(EMP.email || '')}</p></div></div>
+      <div class="hd"><div class="emp"><img src="${LOGO}" alt="${esc(EMP.nombre)}"><div><b>${esc(EMP.nombre)}</b><p>${esc(EMP.nit || '')}</p><p>${esc([EMP.direccion, EMP.ciudad].filter(Boolean).join(' · '))}</p><p>${esc(EMP.telefono || '')} · ${esc(EMP.email || '')}</p></div></div>
         <div class="num"><span>${esc(tipo)}</span><b>No. ${esc(numero)}</b><p>Fecha: ${fdate(fecha)}</p></div></div>
       ${cuerpo}
       <p class="pie">Documento generado por el sistema de compras de ${esc(EMP.nombre)}</p>
@@ -943,6 +943,18 @@ Enviar la cotización respondiendo a este mensaje o al correo ${esc(EMP.email ||
       <div class="row gap wrap"><button class="btn" onclick="App.backup()">⬇️ Descargar copia (JSON)</button><button class="btn" onclick="App.exportItems()">⬇️ Detalle de ítems (Excel)</button>
       ${DEMO ? `<button class="btn danger-ghost" onclick="App.resetDemo()">Reiniciar datos de demostración</button>` : ''}</div>
       <p class="muted sm">Modo actual: <b>${DEMO ? 'Demostración (datos en este navegador)' : GHM ? 'Datos cifrados en el repositorio de GitHub' : 'Supabase (base de datos en la nube)'}</b></p>
+      ${store.mode !== 'supabase' ? `<div class="peligro"><h2>🧹 Empezar de cero</h2>
+        <p>Borra los movimientos de prueba: <b>${S.reqs.length} solicitud(es)</b> con sus cotizaciones, pagos y archivos adjuntos, las notificaciones, las consultas de estado del enlace y los envíos pendientes del buzón. La numeración vuelve a <b>REQ-0001</b>.</p>
+        <p class="muted sm">Se conservan siempre: usuarios y contraseñas, token de GitHub, enlace de solicitudes y clave de Claude. Antes de borrar se descarga una copia de seguridad.</p>
+        <form onsubmit="App.empezarDeCero(event)">
+          <div class="checks">
+            <label class="check"><input type="checkbox" name="proyectos" checked> Conservar los proyectos (${S.proyectos.length})</label>
+            <label class="check"><input type="checkbox" name="proveedores"> Conservar los proveedores (${S.proveedores.length})</label>
+          </div>
+          <label>Para confirmar, escriba BORRAR<input name="confirma" autocomplete="off" placeholder="BORRAR" style="max-width:220px"></label>
+          <button class="btn danger">🧹 Borrar movimientos y empezar de cero</button>
+          <p id="resetAvance" class="muted sm"></p>
+        </form></div>` : ''}
       ${GHM ? `<h2>Token de GitHub</h2><p class="muted">Cuando el token venza, la app dejará de guardar cambios. Cree uno nuevo (mismos permisos: solo este repositorio, Contents: Read and write) y péguelo aquí.</p>
       <form class="row gap wrap" onsubmit="App.guardarToken(event)"><input name="token" type="password" autocomplete="off" placeholder="Token nuevo" style="max-width:360px"><button class="btn">Actualizar token</button></form>` : ''}
       ${store.mode !== 'supabase' ? `<h2>Lectura automática de cotizaciones</h2>
@@ -1547,6 +1559,20 @@ Enviar la cotización respondiendo a este mensaje o al correo ${esc(EMP.email ||
     await store.upsert('proyectos', { id: id || newId(), nombre: f.get('nombre').trim(), activo: !!f.get('activo') });
     cerrarModal(); toast('Proyecto guardado'); await route();
     await publicarCfgSolicitud();   // la lista de proyectos del enlace público
+  });
+  App.empezarDeCero = run(async ev => {
+    ev.preventDefault(); const f = new FormData(ev.target);
+    if (String(f.get('confirma') || '').trim().toUpperCase() !== 'BORRAR') throw new Error('Escriba BORRAR para confirmar');
+    const keep = { proyectos: !!f.get('proyectos'), proveedores: !!f.get('proveedores') };
+    const av = t => { const e = $('#resetAvance'); if (e) e.textContent = t; };
+    av('Descargando copia de seguridad…');
+    const d = await store.loadAll();
+    descargar(`respaldo-antes-de-borrar-${today()}.json`, JSON.stringify(d, null, 2), 'application/json');
+    await store.borrarMovimientos(keep, av);
+    av('Listo.');
+    await publicarCfgSolicitud();
+    toast('Movimientos borrados. La app quedó lista para empezar.');
+    location.hash = '#/inicio'; await route();
   });
   App.backup = run(async () => {
     const d = await store.loadAll();

@@ -129,6 +129,13 @@
           .sort((a, b) => b.creado.localeCompare(a.creado)).slice(0, 50));
       },
       async markRead(ids) { load(); (db.notifs || []).forEach(n => { if (ids.includes(n.id)) n.leida = true; }); persist(); },
+      async borrarMovimientos({ proyectos: keepProy, proveedores: keepProv }) {
+        load(); db.reqs = []; db.notifs = []; db.seq = 0; db.files = {};
+        if (!keepProy) db.proyectos = [];
+        if (!keepProv) db.proveedores = [];
+        persist();
+        ['compras_buzon_demo', 'compras_estado_demo'].forEach(k => { try { localStorage.removeItem(k); } catch (e) { } });
+      },
       async getClaudeKey() { load(); return db.claudeKey || null; },
       async setClaudeKey(k) { load(); if (k) db.claudeKey = k; else delete db.claudeKey; persist(); },
       reset() { try { localStorage.removeItem(KEY); } catch (e) { } }
@@ -212,6 +219,7 @@
       async getClaudeKey() { return null; },
       async setClaudeKey() { throw new Error('La lectura con Claude no está disponible en el modo Supabase.'); },
       buzonInfo() { return null; },
+      async borrarMovimientos() { throw new Error('No disponible en el modo Supabase.'); },
       async activarBuzon() { throw new Error('El enlace público de solicitudes no está disponible en el modo Supabase.'); },
       async publicarConfigSolicitud() { }, async leerBuzon() { return []; }, async cerrarEnvio() { }, async publicarEstado() { },
       reset() { }
@@ -575,6 +583,34 @@
       async markRead(ids) {
         if (!ids.length) return;
         await mutarDatos(d => { let n = 0; (d.notifs || []).forEach(x => { if (ids.includes(x.id) && !x.leida) { x.leida = true; n++; } }); if (!n) return false; });
+      },
+      // Empezar de cero: borra los movimientos (y opcionalmente proyectos/proveedores); conserva usuarios y configuración.
+      async borrarMovimientos({ proyectos: keepProy, proveedores: keepProv }, avance) {
+        const paso = t => { try { avance && avance(t); } catch (e) { } };
+        paso('Borrando solicitudes, cotizaciones y pagos…');
+        await mutarDatos(d => {
+          d.reqs = []; d.notifs = []; d.seq = 0;
+          if (!keepProy) d.proyectos = [];
+          if (!keepProv) d.proveedores = [];
+        });
+        const listar = async ruta => {
+          const r = await fetch(url(ruta) + '?ref=' + encodeURIComponent(gh.branch), { headers: cab(), cache: 'no-store' });
+          if (r.status === 404) return [];
+          if (!r.ok) throw await fallo(r);
+          const j = await r.json(); return Array.isArray(j) ? j.filter(x => x.type === 'file') : [];
+        };
+        const borrar = async f => {
+          const r = await fetch(url(f.path), { method: 'DELETE', headers: cab({ 'Content-Type': 'application/json' }), body: JSON.stringify({ message: 'Actualización', sha: f.sha, branch: gh.branch }) });
+          if (!r.ok && r.status !== 404) throw await fallo(r);
+        };
+        for (const dir of ['datos/archivos', 'estado']) {
+          const fs = await listar(dir);
+          for (let i = 0; i < fs.length; i++) { paso(`Borrando ${dir === 'estado' ? 'consultas de estado' : 'archivos adjuntos'} (${i + 1} de ${fs.length})…`); await borrar(fs[i]); }
+        }
+        if (conf && conf.buzon) {
+          paso('Vaciando envíos pendientes del buzón…');
+          try { for (const e of await api.leerBuzon()) await api.cerrarEnvio(e.ref, 'descartado'); } catch (e) { console.warn('Buzón', e); }
+        }
       },
       async getClaudeKey() { return (conf && conf.claudeKey) || null; },
       async setClaudeKey(k) { await mutarConf(c => { if (k) c.claudeKey = k; else delete c.claudeKey; }); },

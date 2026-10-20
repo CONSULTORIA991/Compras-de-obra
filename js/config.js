@@ -20,11 +20,11 @@ window.APP_CONFIG = {
   // Datos que aparecen en el documento de "Solicitud de cotización"
   EMPRESA: {
     nombre: 'ODESA CARIBE S.A.S.',
-    nit: 'NIT 900.409.543',
-    direccion: 'Calle 93 N 49C - 274 Local 2',
-    ciudad: '',
-    telefono: 'Tel. 313 577 8685',
-    email: 'compras@odesa.com.co'   // ← confirme que este correo exista
+    nit: 'NIT 900.409.543-1',
+    direccion: 'CL 93 # 49C - 274 LC 2',
+    ciudad: 'Barranquilla, Atlántico',
+    telefono: 'Tel. 313 577 8685 · 300 553 6818',
+    email: 'ksanguino@odesa.com.co'
   },
 
   // Días tras los cuales una tarea se marca como "Atrasada"

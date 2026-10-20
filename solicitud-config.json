@@ -1,0 +1,19 @@
+{
+ "v": 1,
+ "owner": "consultoria991",
+ "repo": "buzon-compras",
+ "t": "sIzFi0AGs8lPURyI/IiKigzSTUgQrgQB0ASPmMwJKNxIElgCCtjJn8SAYgBN3A0HOsUMZNQNEkjSBYhc9YRNGYSHysCJ9ACJdozMqACK9AyXeVSAD0FLDcAGZYAB",
+ "pub": {
+  "kty": "RSA",
+  "n": "vacM0W3IDXoYc6AFPqwUJXmXUkHXEQn50NRNib6CPwAbCc5TAJTX2gAsfidw7oddasdi7gPBI5_DCddWAtKYNQ7hO-jF162PVba9qLEZ4vQ0_p2Ceh3O0JNOZhelENy0IkuTKDk9OMdyYY8ovYmp5Vsy_RdcP4hvgGG6459tQq_5dEMecPXM6RWZbMMKbPwrcuAvej-RRcPogyr95er39OkBK54kRBAtovQ8zQAdp9uA30bV_R4zk0tn44oPP3XL2JhtpqzKXwSOGi5Pjz7GSTbUckKSB444GraRO4QdpzH3E6GQMfdQyAYfm-WB-gD7B8SzkhgrTKYaq8tgcBworDbGMQ4kCNElpE4bBv6J6IVnxs7OhIcdD0d1ovZgOju4MY9NJfINH8zNq4FV4Ho--yPd2ZrLU0_Y-ChAxTS9sgd8ErsAFD7Ot5e8w8i83yGbv9Cd5mufnLBHVsmBTCJaiDpviKcXeBYQyoHC4QLN489GUasn6plr6UvfB6n8xwZ_",
+  "e": "AQAB",
+  "alg": "RSA-OAEP-256",
+  "ext": true
+ },
+ "proyectos": [
+  "AMA",
+  "LAGOMAR",
+  "PUNTAMARINA",
+  "SUMMUS"
+ ]
+}
